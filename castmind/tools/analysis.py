@@ -62,7 +62,7 @@ def evaluate_models_on_window(
             if err < best_err:
                 best_err, best_name = err, m.alias
         except Exception as e:
-            raise ValueError(f"Error fitting model {m.alias} : {e}")
+            print(f"[warn] Skipping model {m.alias}: {e}")
             continue
     return best_name, best_err
 

@@ -1,2 +1,11 @@
-## Dataset Briefing Placeholder
-# Add ETTh1 contextual notes here.
+## ETTh1 Dataset Briefing
+
+ETTh1 records hourly measurements from an electricity transformer.
+The endogenous target is oil temperature (OT). The remaining columns
+(HUFL, HULL, MUFL, MULL, LUFL, LULL) are load features that often
+move with OT and can serve as exogenous context.
+
+Typical patterns:
+- Strong daily seasonality (24 hours) and weekly periodicity.
+- OT tends to rise with higher load and during hotter seasons.
+- Sudden spikes may follow load shocks rather than a simple trend.

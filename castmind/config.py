@@ -61,14 +61,15 @@ def load_config(path: str) -> ExperimentConfig:
 
     # Expand env vars and absolute paths
     for d in datasets:
-        d.training_csv = os.path.expandvars(d.training_csv)
-        d.test_csv = os.path.expandvars(d.test_csv)
+        d.training_csv = os.path.expandvars(d.training_csv or "")
+        d.test_csv = os.path.expandvars(d.test_csv or "")
         if d.context_prompt_file:
             d.context_prompt_file = os.path.expandvars(d.context_prompt_file)
         if d.checkpoints:
             d.checkpoints = {
                 str(model): os.path.expandvars(path)
                 for model, path in d.checkpoints.items()
+                if path
             }
         d.aliases = DatasetConfig.all_aliases(d)
     return ExperimentConfig(

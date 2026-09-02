@@ -11,18 +11,18 @@ import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 
-from alphacast.config import DatasetConfig, ExperimentConfig, load_config
-from alphacast.data_loader import TIME_COL, infer_target_column
-from alphacast.agents.runtime import (
+from castmind.config import DatasetConfig, ExperimentConfig, load_config
+from castmind.data_loader import TIME_COL, infer_target_column
+from castmind.agents.runtime import (
     build_agent_or_none,
     clear_resume_state,
     deterministic_run_for_dataset,
     load_resume_state,
     save_resume_state,
 )
-from alphacast.eval import align_predictions, mae, mse, smape
-from alphacast.tools.analysis import analyze_training
-from alphacast.features import extract_target_features, extract_exogenous_features
+from castmind.eval import align_predictions, mae, mse, smape
+from castmind.tools.analysis import analyze_training
+from castmind.features import extract_target_features, extract_exogenous_features
 
 
 def _load_dataset_brief(path: Optional[str]) -> str:

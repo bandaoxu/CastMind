@@ -1371,7 +1371,6 @@ class ZeroModel(ForecastModel):
         return np.asarray(fcst_df[self.alias], dtype=float)
 
 #####foundation_model###################
-from transformers import AutoModelForCausalLM, AutoTokenizer
 # @dataclass
 # class TimesFMModel:
     
@@ -1751,6 +1750,8 @@ class SundialModel:
             model_id = self.local_dir if self.local_dir and os.path.isdir(self.local_dir) else self.hf_repo_id
             print(f"Loading model from {model_id}")
             
+            from transformers import AutoModelForCausalLM
+
             # Load model and tokenizer
             self._model = AutoModelForCausalLM.from_pretrained(model_id, trust_remote_code=True).to(device).eval()
             # self._tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
@@ -1799,20 +1800,10 @@ class SundialModel:
         return pred_tokens.detach().cpu().numpy()
     
 def get_default_models() -> List[ForecastModel]:
-    # Maintain three basic models: SeasonalNaive, HistoricAverage, and AutoARIMA
-    return [
+    models: List[ForecastModel] = [
         SeasonalNaiveModel(),
         HistoricAverageModel(),
         ArimaModel(),
-        #TimesFMModel(),
-        #ChronosModel(),
-        SundialModel(),
-        AutoformerModel(),
-        DLinearModel(),
-        PatchTSTModel(),
-        TimesNetModel(),
-        iTransformerModel(),
-        ProphetModel(),
         HoltWintersModel(),
         ThetaModel(),
         CesModel(),
@@ -1820,3 +1811,35 @@ def get_default_models() -> List[ForecastModel]:
         DynamicOptimizedThetaModel(),
         ZeroModel(),
     ]
+    try:
+        import cmdstanpy
+
+        cmdstanpy.cmdstan_path()
+        models.insert(3, ProphetModel())
+    except Exception:
+        pass
+
+    for cls in (
+        AutoformerModel,
+        DLinearModel,
+        PatchTSTModel,
+        TimesNetModel,
+        iTransformerModel,
+    ):
+        checkpoint = _resolve_checkpoint(cls.alias)
+        if checkpoint and os.path.exists(checkpoint):
+            models.append(cls())
+
+    sundial_dir = "./castmind/foundation_models/sundial-base-128m"
+    if os.path.isdir(sundial_dir):
+        models.append(SundialModel())
+
+    timesfm_dir = "./castmind/foundation_models/timesfm"
+    if os.path.isdir(timesfm_dir):
+        models.append(TimesFMModel())
+
+    chronos_dir = "./castmind/foundation_models/chronos-bolt-base"
+    if os.path.isdir(chronos_dir):
+        models.append(ChronosModel())
+
+    return models
