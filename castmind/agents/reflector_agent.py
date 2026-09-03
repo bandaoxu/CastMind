@@ -24,14 +24,26 @@ REFLECTOR_AGENT_PROMPT_FALLBACK = dedent(
 _NUMBER_PATTERN = re.compile(
     r"(?P<number>-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?)(?P<percent>%?)"
 )
+# Only treat explicit horizon/length claims as window checks.
+# Do NOT match "Step 0" / "window_offset=0" (those are indices, not horizons).
 _WINDOW_CLAIM_PATTERN = re.compile(
-    r"\b(?:window|horizon|steps?|points?)\b[^\d\-]{0,12}(-?\d+(?:\.\d+)?)",
+    r"(?:"
+    r"(?:predicted[_\s-]?window|forecast[_\s-]?(?:horizon|length|window)|prediction[_\s-]?length)"
+    r"(?:\s+is)?\s*[=:]?\s*(-?\d+(?:\.\d+)?)"
+    r"|"
+    r"\bhorizon\b(?:\s+is)?\s*[=:]?\s*(-?\d+(?:\.\d+)?)"
+    r"|"
+    r"(-?\d+(?:\.\d+)?)\s*[- ]?(?:step|point)s?\s+"
+    r"(?:forecast|horizon|ahead|prediction|window)"
+    r")",
     re.IGNORECASE,
 )
 _BASELINE_CLAIM_PATTERN = re.compile(
     r"\b(?:baseline|reference)\b[^\d\-]{0,16}(-?\d+(?:\.\d+)?)",
     re.IGNORECASE,
 )
+_ISO_DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
+_YEAR_TOKEN_PATTERN = re.compile(r"\b(?:19|20)\d{2}\b")
 
 
 def _safe_float(value: Any) -> float | None:
@@ -149,6 +161,22 @@ def _looks_like_date_fragment(text: str, start: int, end: int) -> bool:
     date_slice = text[start : min(len(text), start + 10)]
     if re.match(r"\d{4}-\d{2}-\d{2}", date_slice):
         return True
+    # Unary-minus false positive on date separators: "...08-21" matched as "-21"
+    raw = text[start:end]
+    if raw.startswith("-") and start > 0 and text[start - 1].isdigit():
+        return True
+    # Any overlap with an ISO date in a local window
+    window_start = max(0, start - 12)
+    local = text[window_start : min(len(text), end + 12)]
+    for date_match in _ISO_DATE_PATTERN.finditer(local):
+        abs_start = window_start + date_match.start()
+        abs_end = window_start + date_match.end()
+        if start < abs_end and end > abs_start:
+            return True
+    # Standalone calendar years (e.g. "Aug 21-24 2017")
+    token = text[start:end]
+    if _YEAR_TOKEN_PATTERN.fullmatch(token):
+        return True
     return False
 
 
@@ -177,6 +205,28 @@ def _extract_numbers_from_text(text: str) -> List[Dict[str, Any]]:
             }
         )
     return results
+
+
+def _window_claim_value(match: re.Match[str]) -> float | None:
+    for group in match.groups():
+        if group is None:
+            continue
+        try:
+            return float(group)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _is_index_or_offset_claim(text: str, match: re.Match[str]) -> bool:
+    """Ignore step indices / window_offset mentions mistaken for horizons."""
+    snippet = text[max(0, match.start() - 24) : min(len(text), match.end() + 24)].lower()
+    if re.search(r"window[_\s-]?offset|step\s*index|sliding\s*step", snippet):
+        return True
+    raw = match.group(0).lower()
+    if re.match(r"^\s*steps?\s+", raw):
+        return True
+    return False
 
 
 def _is_supported_numeric_claim(value: float, context_numbers: List[float]) -> bool:
@@ -255,10 +305,12 @@ def scan_chain_of_thought(
 
     window_mismatches: List[Dict[str, Any]] = []
     for match in _WINDOW_CLAIM_PATTERN.finditer(text):
-        try:
-            claimed = float(match.group(1))
-        except (TypeError, ValueError):
+        if _is_index_or_offset_claim(text, match):
             continue
+        claimed = _window_claim_value(match)
+        if claimed is None:
+            continue
+        # "96h" / "24-hour" style units are fine when the numeric part matches.
         if abs(claimed - predicted_window) > 0.5:
             snippet = text[max(0, match.start() - 40) : min(len(text), match.end() + 40)].strip()
             window_mismatches.append(
@@ -289,6 +341,12 @@ def scan_chain_of_thought(
             try:
                 claimed = float(match.group(1))
             except (TypeError, ValueError):
+                continue
+            # "reference ... 96-step prediction" is a horizon mention, not a baseline level.
+            after = text[match.end() : match.end() + 24].lower()
+            if abs(claimed - float(predicted_window)) <= 0.5 and re.match(
+                r"\s*[- ]?(?:step|point|h\b|hour)", after
+            ):
                 continue
             reference_type = "mean"
             snippet_lower = snippet.lower()

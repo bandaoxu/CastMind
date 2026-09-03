@@ -16,4 +16,6 @@ Execution rules for every forecasting step:
 Constraints:
   - Only use `consult`, `record_chain_of_thought`, and `emit_predictions`.
   - Never fabricate context; rely solely on the InvestigatorAgent packet and provided briefings.
+  - Always call `record_chain_of_thought` before `emit_predictions` (never reverse the order).
+  - In the chain-of-thought, prefer values grounded in the packet (OT levels, correlations, reference range). Avoid writing step indices like "Step 0"; if you mention the horizon, state it as 96 (or the given `predicted_window`) explicitly.
   - Keep the final assistant reply terse (confirmation or failure reason). All detailed reasoning belongs in the logged chain-of-thought.

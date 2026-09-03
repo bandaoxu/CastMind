@@ -170,7 +170,7 @@ class AutoformerModel(ForecastModel):
 
     # Runtime device and decoder history length
     label_len: int = 48
-    timefeat_freq: str = "min"   # Match DLinearModel: encode using minute frequency
+    timefeat_freq: str = "h"   # Must match checkpoint training (freq_map: h->4, t/min->5)
 
     # Runtime cache
     _model: Optional[torch.nn.Module] = None
@@ -213,7 +213,7 @@ class AutoformerModel(ForecastModel):
         args.task_name = "long_term_forecast"
         args.is_training = 0
         args.model = "Autoformer"
-        args.freq = "t"                 # Keep consistent with the paired DLinearModel configuration
+        args.freq = "h"                 # Must match checkpoint training (freq_map: h->4)
         args.checkpoints = "./checkpoints/"
         args.seq_len = L
         args.label_len = 48
@@ -234,11 +234,11 @@ class AutoformerModel(ForecastModel):
         args.target = "real_power"
 
         # Model core & training hyperparameters (aligned with the provided DLinearModel setup)
-        args.d_model = 512
+        args.d_model = 64
         args.n_heads = 8
         args.e_layers = 2
         args.d_layers = 1
-        args.d_ff = 2048
+        args.d_ff = 128
         args.moving_avg = 25
         args.factor = 3
         args.distil = True
@@ -354,7 +354,7 @@ class DLinearModel(ForecastModel):
 
     # Runtime device and decoder history length
     label_len: int = 48           
-    timefeat_freq: str = "min"      # Training used 'h'; change to '15min' for 15-minute data if needed
+    timefeat_freq: str = "h"      # Must match checkpoint training (freq_map: h->4, t/min->5)
 
     # Runtime cache
     _model: Optional[torch.nn.Module] = None
@@ -398,7 +398,7 @@ class DLinearModel(ForecastModel):
         args.task_name = "long_term_forecast"
         args.is_training = 0
         args.model = "DLinear"
-        args.freq = "t"
+        args.freq = "h"
         args.checkpoints = "./checkpoints/"
         args.seq_len = L
         args.label_len = 48  # Slightly more stable
@@ -528,7 +528,7 @@ class PatchTSTModel(ForecastModel):
     # Runtime device and decoder history length
     label_len: int = 48              # Training previously used 84; adjust as needed (≤ seq_len)
     # Encoder time-feature frequency (match training; use 't' for minutes or '15min' if supported)
-    timefeat_freq: str = "min"
+    timefeat_freq: str = "h"
 
 
     # Runtime cache
@@ -570,7 +570,7 @@ class PatchTSTModel(ForecastModel):
         args.is_training = 0
         args.model = 'PatchTST'
         
-        args.freq = 't'
+        args.freq = 'h'
         args.checkpoints = './checkpoints/'
 
         # Lengths: seq_len=L, label_len≤L, pred_len is set during predict(h)
@@ -595,11 +595,11 @@ class PatchTSTModel(ForecastModel):
         args.target = 'real_power'
 
         # Transformer backbone
-        args.d_model = 512
+        args.d_model = 64
         args.n_heads = 2
         args.e_layers = 1
         args.d_layers = 1
-        args.d_ff = 2048
+        args.d_ff = 128
         args.moving_avg = 25
         args.factor = 3
         args.distil = True
@@ -694,7 +694,7 @@ class TimesNetModel(ForecastModel):
 
     # Runtime configuration
     label_len: int = 48         # Training used 84
-    timefeat_freq: str = "min"     # Match training; use "15min" for quarter-hour data if needed
+    timefeat_freq: str = "h"     # Must match checkpoint training (freq_map: h->4, t/min->5)
 
     # Runtime cache
     _model: Optional[torch.nn.Module] = None
@@ -739,7 +739,7 @@ class TimesNetModel(ForecastModel):
         args.task_name = "long_term_forecast"
         args.is_training = 0
         args.model = "TimesNet"
-        args.freq = 't'
+        args.freq = 'h'
         args.checkpoints = "./checkpoints/"
 
         args.seq_len = L
@@ -870,7 +870,7 @@ class iTransformerModel(ForecastModel):
 
     # Runtime configuration
     label_len: int = 48          # Training used 84; automatically align with seq_len
-    timefeat_freq: str = "min"     # Hourly base; adjust to "15min" for quarter-hour data
+    timefeat_freq: str = "h"     # Must match checkpoint training (freq_map: h->4, t/min->5)
 
     # Runtime cache
     _model: Optional[torch.nn.Module] = None
@@ -914,7 +914,7 @@ class iTransformerModel(ForecastModel):
         args.task_name = "long_term_forecast"
         args.is_training = 0
         args.model = "iTransformer"
-        args.freq = 't'
+        args.freq = 'h'
         args.checkpoints = "./checkpoints/"
 
         args.seq_len = L
@@ -1629,7 +1629,7 @@ class ChronosModel:
 
         # Forecast
         _, pred = pipe.predict_quantiles(
-            context=context, prediction_length=h, quantile_levels=[0.5]
+            inputs=context, prediction_length=h, quantile_levels=[0.5]
         )
         pred = pred.squeeze()
         
@@ -1760,6 +1760,19 @@ class SundialModel:
             raise ImportError("transformers is required for Sundial.") from e
 
         return self._model
+
+    @staticmethod
+    def _patch_dynamic_cache() -> None:
+        """transformers>=5 removed DynamicCache.seen_tokens; Sundial still expects it."""
+        try:
+            from transformers.cache_utils import DynamicCache
+            if not hasattr(DynamicCache, "seen_tokens"):
+                DynamicCache.seen_tokens = property(
+                    lambda self: self.get_seq_length() if hasattr(self, "get_seq_length") else 0
+                )
+        except Exception:
+            pass
+
     def predict(self, h: int,**kwargs) -> np.ndarray:
         """
         Predict the next `h` values based on the fitted data.
@@ -1767,6 +1780,7 @@ class SundialModel:
         assert self._y is not None and len(self._y) > 0, "Model not fitted with data yet."
         
         import torch
+        self._patch_dynamic_cache()
         model = self._model or self._ensure_model()
 
         # Prepare input: reshape to (1, context_length) for model input
@@ -1832,7 +1846,21 @@ def get_default_models() -> List[ForecastModel]:
 
     sundial_dir = "./castmind/foundation_models/sundial-base-128m"
     if os.path.isdir(sundial_dir):
-        models.append(SundialModel())
+        # Sundial's generate() expects transformers 4.x cache APIs (seen_tokens /
+        # get_usable_length). Skip on transformers>=5 to avoid per-window failures.
+        try:
+            import transformers
+
+            major = int(str(transformers.__version__).split(".", 1)[0])
+            if major < 5:
+                models.append(SundialModel())
+            else:
+                print(
+                    "[warn] Skipping Sundial: incompatible with transformers "
+                    f"{transformers.__version__} (need <5)."
+                )
+        except Exception:
+            models.append(SundialModel())
 
     timesfm_dir = "./castmind/foundation_models/timesfm"
     if os.path.isdir(timesfm_dir):

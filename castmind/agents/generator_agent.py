@@ -25,6 +25,7 @@ GENERATOR_AGENT_PROMPT_FALLBACK = dedent(
       5. Call `emit_predictions` exactly once with the prediction list and required metadata (training_csv, predicted_window, output_dir, dataset_name, frequency, window_offset, start_timestamp, selected_features, feature_weights, and optional exogenous selections).
 
     Use no tools other than `consult`, `record_chain_of_thought`, and `emit_predictions`.
+    Always call `record_chain_of_thought` before `emit_predictions`. Avoid writing step indices like "Step 0" in the chain-of-thought.
     """
 )
 
@@ -108,7 +109,7 @@ def create_generator_agent(
         return {"logged": True, "path": path}
 
     @generator_agent.tool
-    def emit_predictions(
+    async def emit_predictions(
         ctx: RunContext[None],
         predictions: List[float],
         training_csv: str,
@@ -168,7 +169,8 @@ def create_generator_agent(
             "investor_packet": investor_packet or {},
             "chain_of_thought": chain_text,
         }
-        reflection_result = reflector_agent.run_sync(json.dumps(reflection_request, default=json_default))
+        # Nested run_sync deadlocks inside a sync tool during an agent run; use async.
+        reflection_result = await reflector_agent.run(json.dumps(reflection_request, default=json_default))
         try:
             reflection = json.loads(reflection_result.output)
         except Exception as exc:
