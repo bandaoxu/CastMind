@@ -1,2 +1,6 @@
-## Dataset Briefing Placeholder
-# Add MOPEX contextual notes here.
+## MOPEX Dataset Briefing
+
+Daily catchment hydrology. The endogenous target is streamflow.
+Exogenous drivers are mean areal precipitation (MAP), climatic potential evaporation (CPE),
+daily maximum temperature (Tmax), and daily minimum temperature (Tmin).
+Flow responds to rainfall with catchment lag; hot dry spells increase evapotranspiration and lower baseflow.

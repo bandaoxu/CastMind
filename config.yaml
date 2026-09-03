@@ -3,13 +3,162 @@ use_features: True
 use_exogenous: True
 
 datasets:
+  - name: EPF_NP
+    aliases: [np, nordpool]
+    training_csv: data/EPF_NP/train.csv
+    test_csv: data/EPF_NP/test.csv
+    look_back: 168
+    predicted_window: 24
+    sliding_window: 168
+    frequency: h
+    checkpoints:
+      Autoformer: castmind/DeepLearningCheckpoints/EPF_NP/Autoformer.pth
+      DLinear: castmind/DeepLearningCheckpoints/EPF_NP/DLinear.pth
+      iTransformer: castmind/DeepLearningCheckpoints/EPF_NP/iTransformer.pth
+      PatchTST: castmind/DeepLearningCheckpoints/EPF_NP/PatchTST.pth
+      TimesNet: castmind/DeepLearningCheckpoints/EPF_NP/TimesNet.pth
+    context_prompt_file: prompts/contextual_briefings/EPF_NP.txt
+
+  - name: EPF_PJM
+    aliases: [pjm]
+    training_csv: data/EPF_PJM/train.csv
+    test_csv: data/EPF_PJM/test.csv
+    look_back: 168
+    predicted_window: 24
+    sliding_window: 168
+    frequency: h
+    checkpoints:
+      Autoformer: castmind/DeepLearningCheckpoints/EPF_PJM/Autoformer.pth
+      DLinear: castmind/DeepLearningCheckpoints/EPF_PJM/DLinear.pth
+      iTransformer: castmind/DeepLearningCheckpoints/EPF_PJM/iTransformer.pth
+      PatchTST: castmind/DeepLearningCheckpoints/EPF_PJM/PatchTST.pth
+      TimesNet: castmind/DeepLearningCheckpoints/EPF_PJM/TimesNet.pth
+    context_prompt_file: prompts/contextual_briefings/EPF_PJM.txt
+
+  - name: EPF_BE
+    aliases: [be, belgium]
+    training_csv: data/EPF_BE/train.csv
+    test_csv: data/EPF_BE/test.csv
+    look_back: 168
+    predicted_window: 24
+    sliding_window: 168
+    frequency: h
+    checkpoints:
+      Autoformer: castmind/DeepLearningCheckpoints/EPF_BE/Autoformer.pth
+      DLinear: castmind/DeepLearningCheckpoints/EPF_BE/DLinear.pth
+      iTransformer: castmind/DeepLearningCheckpoints/EPF_BE/iTransformer.pth
+      PatchTST: castmind/DeepLearningCheckpoints/EPF_BE/PatchTST.pth
+      TimesNet: castmind/DeepLearningCheckpoints/EPF_BE/TimesNet.pth
+    context_prompt_file: prompts/contextual_briefings/EPF_BE.txt
+
+  - name: EPF_FR
+    aliases: [fr, france]
+    training_csv: data/EPF_FR/train.csv
+    test_csv: data/EPF_FR/test.csv
+    look_back: 168
+    predicted_window: 24
+    sliding_window: 168
+    frequency: h
+    checkpoints:
+      Autoformer: castmind/DeepLearningCheckpoints/EPF_FR/Autoformer.pth
+      DLinear: castmind/DeepLearningCheckpoints/EPF_FR/DLinear.pth
+      iTransformer: castmind/DeepLearningCheckpoints/EPF_FR/iTransformer.pth
+      PatchTST: castmind/DeepLearningCheckpoints/EPF_FR/PatchTST.pth
+      TimesNet: castmind/DeepLearningCheckpoints/EPF_FR/TimesNet.pth
+    context_prompt_file: prompts/contextual_briefings/EPF_FR.txt
+
+  - name: EPF_DE
+    aliases: [de, germany]
+    training_csv: data/EPF_DE/train.csv
+    test_csv: data/EPF_DE/test.csv
+    look_back: 168
+    predicted_window: 24
+    sliding_window: 168
+    frequency: h
+    checkpoints:
+      Autoformer: castmind/DeepLearningCheckpoints/EPF_DE/Autoformer.pth
+      DLinear: castmind/DeepLearningCheckpoints/EPF_DE/DLinear.pth
+      iTransformer: castmind/DeepLearningCheckpoints/EPF_DE/iTransformer.pth
+      PatchTST: castmind/DeepLearningCheckpoints/EPF_DE/PatchTST.pth
+      TimesNet: castmind/DeepLearningCheckpoints/EPF_DE/TimesNet.pth
+    context_prompt_file: prompts/contextual_briefings/EPF_DE.txt
+
   - name: ETTh1
     aliases: [ett, etth, etth1]
     training_csv: data/ETTh1/train.csv
     test_csv: data/ETTh1/test.csv
     look_back: 96
-    predicted_window: 24
-    sliding_window: 336
+    predicted_window: 96
+    sliding_window: 96
     frequency: h
-    checkpoints: {}
+    checkpoints:
+      Autoformer: castmind/DeepLearningCheckpoints/ETTh1/Autoformer.pth
+      DLinear: castmind/DeepLearningCheckpoints/ETTh1/DLinear.pth
+      iTransformer: castmind/DeepLearningCheckpoints/ETTh1/iTransformer.pth
+      PatchTST: castmind/DeepLearningCheckpoints/ETTh1/PatchTST.pth
+      TimesNet: castmind/DeepLearningCheckpoints/ETTh1/TimesNet.pth
     context_prompt_file: prompts/contextual_briefings/ETTh1.txt
+
+  - name: ETTm1
+    aliases: [ettm, ettm1]
+    training_csv: data/ETTm1/train.csv
+    test_csv: data/ETTm1/test.csv
+    look_back: 96
+    predicted_window: 96
+    sliding_window: 96
+    frequency: 15min
+    checkpoints:
+      Autoformer: castmind/DeepLearningCheckpoints/ETTm1/Autoformer.pth
+      DLinear: castmind/DeepLearningCheckpoints/ETTm1/DLinear.pth
+      iTransformer: castmind/DeepLearningCheckpoints/ETTm1/iTransformer.pth
+      PatchTST: castmind/DeepLearningCheckpoints/ETTm1/PatchTST.pth
+      TimesNet: castmind/DeepLearningCheckpoints/ETTm1/TimesNet.pth
+    context_prompt_file: prompts/contextual_briefings/ETTm1.txt
+
+  - name: windy_power
+    aliases: [windy, wind]
+    training_csv: data/windy_power/train.csv
+    test_csv: data/windy_power/test.csv
+    look_back: 96
+    predicted_window: 96
+    sliding_window: 96
+    frequency: 15min
+    checkpoints:
+      Autoformer: castmind/DeepLearningCheckpoints/windy_power/Autoformer.pth
+      DLinear: castmind/DeepLearningCheckpoints/windy_power/DLinear.pth
+      iTransformer: castmind/DeepLearningCheckpoints/windy_power/iTransformer.pth
+      PatchTST: castmind/DeepLearningCheckpoints/windy_power/PatchTST.pth
+      TimesNet: castmind/DeepLearningCheckpoints/windy_power/TimesNet.pth
+    context_prompt_file: prompts/contextual_briefings/windy_power.txt
+
+  - name: sunny_power
+    aliases: [sunny, solar]
+    training_csv: data/sunny_power/train.csv
+    test_csv: data/sunny_power/test.csv
+    look_back: 96
+    predicted_window: 96
+    sliding_window: 96
+    frequency: 15min
+    checkpoints:
+      Autoformer: castmind/DeepLearningCheckpoints/sunny_power/Autoformer.pth
+      DLinear: castmind/DeepLearningCheckpoints/sunny_power/DLinear.pth
+      iTransformer: castmind/DeepLearningCheckpoints/sunny_power/iTransformer.pth
+      PatchTST: castmind/DeepLearningCheckpoints/sunny_power/PatchTST.pth
+      TimesNet: castmind/DeepLearningCheckpoints/sunny_power/TimesNet.pth
+    context_prompt_file: prompts/contextual_briefings/sunny_power.txt
+
+  - name: MOPEX
+    aliases: [mopex, hydro]
+    training_csv: data/MOPEX/train.csv
+    test_csv: data/MOPEX/test.csv
+    look_back: 96
+    predicted_window: 96
+    sliding_window: 96
+    frequency: D
+    checkpoints:
+      Autoformer: castmind/DeepLearningCheckpoints/MOPEX/Autoformer.pth
+      DLinear: castmind/DeepLearningCheckpoints/MOPEX/DLinear.pth
+      iTransformer: castmind/DeepLearningCheckpoints/MOPEX/iTransformer.pth
+      PatchTST: castmind/DeepLearningCheckpoints/MOPEX/PatchTST.pth
+      TimesNet: castmind/DeepLearningCheckpoints/MOPEX/TimesNet.pth
+    context_prompt_file: prompts/contextual_briefings/MOPEX.txt

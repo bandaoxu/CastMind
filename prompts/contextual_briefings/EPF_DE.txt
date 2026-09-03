@@ -1,2 +1,5 @@
-## Dataset Briefing Placeholder
-# Add EPF_DE contextual notes here.
+## EPF_DE Dataset Briefing
+
+German day-ahead electricity prices (hourly). The target is Price.
+Exogenous drivers are the aggregated wind/solar generation forecast and the Amprion zonal load forecast.
+High renewable output can push prices down or negative; load still dominates weekday peaks.

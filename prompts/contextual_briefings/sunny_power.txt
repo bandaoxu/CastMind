@@ -1,2 +1,5 @@
-## Dataset Briefing Placeholder
-# Add sunny_power contextual notes here.
+## Sunny Power Dataset Briefing
+
+15-minute solar generation with meteorological drivers:
+direct radiation, 80 m wind, 2 m temperature, humidity, and precipitation.
+Generation follows the solar cycle; clouds and precipitation suppress midday peaks.

@@ -1,2 +1,5 @@
-## Dataset Briefing Placeholder
-# Add windy_power contextual notes here.
+## Windy Power Dataset Briefing
+
+15-minute wind farm generation with meteorological drivers:
+direct radiation, 80 m wind speed/direction, 2 m temperature, 2 m humidity, and precipitation.
+Power is dominated by 80 m wind speed; cut-in/cut-out behavior makes the series nonlinear and noisy.

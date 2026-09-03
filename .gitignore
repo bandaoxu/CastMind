@@ -57,8 +57,15 @@ Thumbs.db
 
 # Project-specific: experiment outputs
 outputs/
+.mplconfig/
 
-# Project-specific: DeepLearningCheckpoints、foundation_models
+# Local progress / weekly notes (keep off remote)
+docs/
+
+# Local datasets and trained/downloaded weights
+data/
+castmind/DeepLearningCheckpoints/
+castmind/foundation_models/
 castagent/DeepLearningCheckpoints/
 castagent/foundation_models/
 

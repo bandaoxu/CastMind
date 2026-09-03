@@ -1,2 +1,5 @@
-## Dataset Briefing Placeholder
-# Add EPF_PJM contextual notes here.
+## EPF_PJM Dataset Briefing
+
+PJM COMED zonal day-ahead prices (hourly). The target is Price.
+Exogenous drivers are the system load forecast and the COMED zonal load forecast.
+Load-driven peaks are common; treat large evening spikes as load events rather than a new trend.

@@ -1,2 +1,5 @@
-## Dataset Briefing Placeholder
-# Add ETTm1 contextual notes here.
+## ETTm1 Dataset Briefing
+
+ETTm1 is the 15-minute electricity transformer temperature series.
+The endogenous target is oil temperature (OT). HUFL/HULL/MUFL/MULL/LUFL/LULL are load features.
+Daily and weekly cycles remain strong; load increases often lift OT with a short lag.

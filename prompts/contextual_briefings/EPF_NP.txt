@@ -1,2 +1,5 @@
-## Dataset Briefing Placeholder
-# Add EPF_NP contextual notes here.
+## EPF_NP Dataset Briefing
+
+Nord Pool day-ahead electricity prices (hourly). The target is Price.
+Exogenous drivers are the system load forecast and the wind power forecast.
+Prices are spiky; load and wind often explain evening ramps and wind-driven drops.
