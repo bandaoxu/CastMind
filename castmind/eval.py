@@ -34,8 +34,8 @@ def align_predictions(
     if "time_stamp" not in pred_df.columns:
         raise ValueError("Prediction frame must contain 'time_stamp'.")
 
-    candidate_col = next((col for col in _PREDICTION_COLUMNS if col in pred_df.columns), None)
-    if candidate_col is None:
+    present_pred_cols = [col for col in _PREDICTION_COLUMNS if col in pred_df.columns]
+    if not present_pred_cols:
         raise ValueError(
             f"Prediction frame must include one of the columns {_PREDICTION_COLUMNS} containing forecast values."
         )
@@ -48,6 +48,13 @@ def align_predictions(
 
     preds_df = pred_df.copy()
     preds_df["time_stamp"] = pd.to_datetime(preds_df["time_stamp"])
+
+    # Coalesce alternate forecast columns (e.g. mixed LLM `prediction` + deterministic
+    # `predicted_ans` after a dirty resume) so mixed CSVs still evaluate.
+    coalesced = pd.to_numeric(preds_df[present_pred_cols[0]], errors="coerce")
+    for col in present_pred_cols[1:]:
+        coalesced = coalesced.fillna(pd.to_numeric(preds_df[col], errors="coerce"))
+    preds_df["_pred_value"] = coalesced
 
     if "emission_index" in preds_df.columns:
         order_values = pd.to_numeric(preds_df["emission_index"], errors="coerce")
@@ -69,7 +76,7 @@ def align_predictions(
         if pd.isna(ts):
             continue
         try:
-            pred_value = float(row[candidate_col])
+            pred_value = float(row["_pred_value"])
         except (TypeError, ValueError):
             continue
         if not np.isfinite(pred_value):

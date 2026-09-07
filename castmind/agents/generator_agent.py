@@ -172,7 +172,16 @@ def create_generator_agent(
         # Nested run_sync deadlocks inside a sync tool during an agent run; use async.
         reflection_result = await reflector_agent.run(json.dumps(reflection_request, default=json_default))
         try:
-            reflection = json.loads(reflection_result.output)
+            raw_out = reflection_result.output
+            if isinstance(raw_out, dict):
+                reflection = raw_out
+            else:
+                text = str(raw_out).strip()
+                if text.startswith("```"):
+                    text = text.strip("`")
+                    if text.startswith("json"):
+                        text = text[4:].strip()
+                reflection = json.loads(text)
         except Exception as exc:
             raise RuntimeError(f"ReflectorAgent returned invalid payload: {exc}") from exc
         if not reflection.get("approved", False):

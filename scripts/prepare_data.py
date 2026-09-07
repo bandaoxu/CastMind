@@ -23,7 +23,12 @@ EPF_SPLITS = (10224, 1584, 3024)
 ETTH_SPLITS = (8544, 1344, 2544)
 ETTM_SPLITS = (16896, 2496, 4896)
 POWER_SPLITS = (16896, 2496, 4896)
-MOPEX_SPLITS = (4018, 730, 1096)  # ~11y / 2y / 3y of daily data
+# AlphaCast Table 6 (same lengths as ETTh1); daily hydrology needs ≥12432 points.
+MOPEX_SPLITS = ETTH_SPLITS
+MOPEX_START = "1980-01-01"
+MOPEX_END = "2014-12-31"
+MOPEX_SITE = "01022500"
+MOPEX_NEEDED = sum(MOPEX_SPLITS)
 
 EPF_COLUMNS = {
     "NP": ["date", "system_load_forecast", "wind_power_forecast", "Price"],
@@ -215,10 +220,14 @@ def prepare_power(kind: str) -> None:
 
 
 def prepare_mopex() -> None:
-    """Daily hydrology stand-in: USGS streamflow + Open-Meteo weather for basin 01022500."""
-    site = "01022500"
+    """Daily hydrology stand-in: USGS streamflow + Open-Meteo weather for basin 01022500.
+
+    Splits follow AlphaCast Table 6: (8544, 1344, 2544). Date range is long enough
+    to yield at least 12432 valid daily rows after merge/dropna.
+    """
+    site = MOPEX_SITE
     url = (
-        f"{USGS}?sites={site}&startDT=1982-01-01&endDT=2003-12-31"
+        f"{USGS}?sites={site}&startDT={MOPEX_START}&endDT={MOPEX_END}"
         "&parameterCd=00060&format=json"
     )
     print(f"[download] {url}")
@@ -228,7 +237,10 @@ def prepare_mopex() -> None:
     flow = pd.DataFrame(
         {
             "date": [row["dateTime"][:10] for row in values],
-            "streamflow": [float(row["value"]) if row["value"] not in ("", "-999999") else math.nan for row in values],
+            "streamflow": [
+                float(row["value"]) if row["value"] not in ("", "-999999") else math.nan
+                for row in values
+            ],
         }
     )
     flow["date"] = pd.to_datetime(flow["date"])
@@ -237,8 +249,8 @@ def prepare_mopex() -> None:
         {
             "latitude": "44.61",
             "longitude": "-68.41",
-            "start_date": "1982-01-01",
-            "end_date": "2003-12-31",
+            "start_date": MOPEX_START,
+            "end_date": MOPEX_END,
             "daily": "precipitation_sum,et0_fao_evapotranspiration,temperature_2m_max,temperature_2m_min",
             "timezone": "UTC",
         }
@@ -253,11 +265,32 @@ def prepare_mopex() -> None:
         }
     )
     df = met.merge(flow, on="date", how="inner").dropna()
-    df = df[["date", "MAP", "CPE", "Tmax", "Tmin", "streamflow"]]
+    df = df[["date", "MAP", "CPE", "Tmax", "Tmin", "streamflow"]].reset_index(drop=True)
+    if len(df) < MOPEX_NEEDED:
+        raise ValueError(
+            f"MOPEX: need ≥{MOPEX_NEEDED} rows for Table 6 splits {MOPEX_SPLITS}, "
+            f"got {len(df)} after merge ({MOPEX_START}..{MOPEX_END}, site {site}). "
+            "Extend MOPEX_START/MOPEX_END or choose another basin."
+        )
     write_split(df, DATA / "MOPEX", MOPEX_SPLITS)
 
 
 def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--force-mopex",
+        action="store_true",
+        help="Rebuild MOPEX even if data/MOPEX/train.csv already exists.",
+    )
+    parser.add_argument(
+        "--only-mopex",
+        action="store_true",
+        help="Only prepare MOPEX (implies rebuilding that dataset).",
+    )
+    args = parser.parse_args()
+
     DATA.mkdir(parents=True, exist_ok=True)
     jobs = [
         ("ETTh1", lambda: prepare_ett("ETTh1", ETTH_SPLITS)),
@@ -271,12 +304,35 @@ def main() -> None:
         ("sunny_power", lambda: prepare_power("sunny_power")),
         ("MOPEX", prepare_mopex),
     ]
+    if args.only_mopex:
+        jobs = [("MOPEX", prepare_mopex)]
+        args.force_mopex = True
+
     failed = []
     for name, fn in jobs:
         train_csv = DATA / name / "train.csv"
-        if train_csv.exists() and name not in {"windy_power", "sunny_power"}:
-            print(f"[skip] {name} already prepared")
-            continue
+        force = args.force_mopex and name == "MOPEX"
+        if train_csv.exists() and name not in {"windy_power", "sunny_power"} and not force:
+            # Skip stale MOPEX if split_meta is not Table 6 lengths.
+            if name == "MOPEX":
+                meta_path = DATA / "MOPEX" / "split_meta.json"
+                try:
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    splits = meta.get("splits") or {}
+                    if (
+                        int(splits.get("train", -1)) != MOPEX_SPLITS[0]
+                        or int(splits.get("val", -1)) != MOPEX_SPLITS[1]
+                        or int(splits.get("test", -1)) != MOPEX_SPLITS[2]
+                    ):
+                        print(
+                            f"[info] MOPEX split_meta {splits} != Table 6 {MOPEX_SPLITS}; rebuilding"
+                        )
+                        force = True
+                except Exception:
+                    force = True
+            if not force:
+                print(f"[skip] {name} already prepared")
+                continue
         try:
             fn()
         except Exception as exc:

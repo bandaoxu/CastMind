@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict, List, Tuple
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+os.chdir(ROOT)
 
 import numpy as np
 import pandas as pd
@@ -20,7 +26,6 @@ from castmind.DeepLearningModels.TimesNet import Model as TimesNet
 from castmind.DeepLearningModels.iTransformer import Model as iTransformer
 from castmind.utils.timefeatures import time_features
 
-ROOT = Path(__file__).resolve().parents[1]
 CKPT_ROOT = ROOT / "castmind" / "DeepLearningCheckpoints"
 
 MODELS = {
@@ -85,29 +90,17 @@ def make_args(model_name: str, seq_len: int, pred_len: int) -> SimpleNamespace:
     args.top_k = 5
     args.num_kernels = 6
     args.individual = 0
-    if model_name == "TimesNet":
-        args.d_model = 16
-        args.d_ff = 32
-        args.e_layers = 2
-        args.n_heads = 8
-    elif model_name == "iTransformer":
-        args.d_model = 128
-        args.d_ff = 128
-        args.e_layers = 2
-        args.n_heads = 8
-    elif model_name == "PatchTST":
-        args.d_model = 64
-        args.d_ff = 128
-        args.e_layers = 1
-        args.n_heads = 2
+    # Keep widths in sync with castmind.models.base.dl_backbone_hparams
+    from castmind.models.base import dl_backbone_hparams
+
+    bb = dl_backbone_hparams(model_name)
+    args.d_model = bb["d_model"]
+    args.d_ff = bb["d_ff"]
+    args.e_layers = bb["e_layers"]
+    args.n_heads = bb["n_heads"]
+    args.d_layers = bb["d_layers"]
+    if model_name == "PatchTST":
         args.patch_len = 16
-    else:
-        args.d_model = 64
-        args.d_ff = 128
-        args.e_layers = 2
-        args.d_layers = 1
-        args.n_heads = 8
-    args.d_layers = getattr(args, "d_layers", 1)
     return args
 
 
@@ -152,9 +145,11 @@ def main() -> None:
     parser.add_argument("--models", nargs="+", default=["DLinear", "TimesNet", "PatchTST", "iTransformer", "Autoformer"])
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--datasets", nargs="+", default=None, help="Subset of dataset names")
+    parser.add_argument("--force", action="store_true", help="Overwrite existing checkpoints")
     args_cli = parser.parse_args()
 
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
     print(f"[info] training on {device}")
 
     datasets: Dict[str, Tuple[Path, int, int]] = {
@@ -169,6 +164,10 @@ def main() -> None:
         "sunny_power": (ROOT / "data/sunny_power/train.csv", 96, 96),
         "MOPEX": (ROOT / "data/MOPEX/train.csv", 96, 96),
     }
+    if args_cli.datasets:
+        datasets = {k: v for k, v in datasets.items() if k in set(args_cli.datasets)}
+
+    ckpt_root = CKPT_ROOT
 
     for ds_name, (csv_path, seq_len, pred_len) in datasets.items():
         if not csv_path.exists():
@@ -177,13 +176,13 @@ def main() -> None:
         print(f"\n=== {ds_name} seq={seq_len} pred={pred_len} ===")
         y, stamps = load_series(csv_path)
         label_len = min(48, seq_len)
-        out_dir = CKPT_ROOT / ds_name
+        out_dir = ckpt_root / ds_name
         out_dir.mkdir(parents=True, exist_ok=True)
         for model_name in args_cli.models:
             if model_name not in MODELS:
                 continue
             ckpt_path = out_dir / f"{model_name}.pth"
-            if ckpt_path.exists():
+            if ckpt_path.exists() and not args_cli.force:
                 print(f"  [skip] {ckpt_path.name} exists")
                 continue
             stride = 1 if model_name == "DLinear" else 8

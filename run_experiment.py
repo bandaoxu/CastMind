@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 from pathlib import Path
 from textwrap import dedent, indent
@@ -23,6 +24,44 @@ from castmind.agents.runtime import (
 from castmind.eval import align_predictions, mae, mse, smape
 from castmind.tools.analysis import analyze_training
 from castmind.features import extract_target_features, extract_exogenous_features
+
+
+def _archive_tag(dataset_name: str) -> str:
+    """Stable archive folder name for overwriteable slots under outputs/_archive/."""
+    override = (os.getenv("CASTMIND_ARCHIVE_NAME") or "").strip()
+    if override:
+        return override
+    mode = (os.getenv("ORCHESTRATION_MODE") or "llm").strip().lower()
+    runtime = (os.getenv("CASTMIND_RUNTIME") or "main").strip().lower()
+    if mode == "llm" and runtime in {"main", "primary", "default"}:
+        # Matches existing main-env DeepSeek LLM archive naming.
+        return f"{dataset_name}_llm_deepseek"
+    if mode == "llm" and runtime in {"sundial", "side", "sideenv"}:
+        return f"{dataset_name}_llm_sundial"
+    if mode == "deterministic" and runtime in {"sundial", "side", "sideenv"}:
+        return f"{dataset_name}_sundial_deterministic"
+    return f"{dataset_name}_{mode}_{runtime}"
+
+
+def archive_dataset_outputs(output_dir: str, dataset_name: str) -> Optional[Path]:
+    """Copy outputs/<dataset> into outputs/_archive/<tag>, replacing any previous copy."""
+    flag = (os.getenv("CASTMIND_AUTO_ARCHIVE") or "1").strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return None
+
+    src = Path(output_dir) / dataset_name
+    if not src.is_dir():
+        print(f"[warn] Auto-archive skipped: missing source directory {src}")
+        return None
+
+    tag = _archive_tag(dataset_name)
+    dest = Path(output_dir) / "_archive" / tag
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(src, dest)
+    print(f"[info] Archived {src} -> {dest} (overwrite)")
+    return dest
 
 
 def _load_dataset_brief(path: Optional[str]) -> str:
@@ -613,6 +652,12 @@ def run_experiment(config_path: str, dataset_selectors: Optional[List[str]] = No
     summary = pd.DataFrame(rows)
     print("\n=== Experiment Summary ===")
     print(summary.to_string(index=False))
+
+    # After a finished run (including early-stop eval), snapshot each dataset that
+    # contributed a summary row into outputs/_archive/<tag>, overwriting prior copies.
+    if not summary.empty and "dataset" in summary.columns:
+        for ds_name in summary["dataset"].astype(str).unique():
+            archive_dataset_outputs(cfg.output_dir, ds_name)
 
 
 if __name__ == "__main__":

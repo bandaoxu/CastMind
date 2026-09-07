@@ -118,8 +118,9 @@ def analyze_training(
         cases_stats[best_model] += 1
         cases_neighbors.append(CaseNeighbor(look_back_window=x.tolist(), pred_window=fut.tolist()))
     
-    kmedoid_clusters = cluster_by_kmedoid(cases, method=method, num_clusters=num_clusters)
-    clusters.extend(kmedoid_clusters)
+    # AlphaCast.pdf §3.3.5: K-means case-library clustering.
+    clustered = cluster_by_kmeans(cases, method=method, num_clusters=num_clusters)
+    clusters.extend(clustered)
 
     os.makedirs(os.path.join(output_dir, dataset_name), exist_ok=True)
     with open(os.path.join(output_dir, dataset_name, "cases_stats.json"), "w", encoding="utf-8") as f:
@@ -157,6 +158,75 @@ def choose_cluster_by_similarity(clusters: List[ClusterEntry], current_window: n
     best_cluster = top1_most_similar_cluster(zscore(current_window), candidates)
     return best_cluster
 
+def _assign_cluster_models(
+    cases: List[CaseEntry],
+    cluster_indices_list: List[List[int]],
+    center_windows: List,
+    method: Optional[str],
+) -> List[ClusterEntry]:
+    centers: List[ClusterEntry] = [
+        ClusterEntry(window=w, best_model={}, total_weight=0) for w in center_windows
+    ]
+    if method == "voting":
+        for gi, cluster_indices in enumerate(cluster_indices_list):
+            group_cases = [cases[idx] for idx in cluster_indices]
+            if group_cases:
+                counts = Counter(c.best_model for c in group_cases)
+                centers[gi].best_model = {counts.most_common(1)[0][0]: 1}
+                centers[gi].total_weight = 1
+    elif method == "weighted":
+        for gi, cluster_indices in enumerate(cluster_indices_list):
+            group_cases = [cases[idx] for idx in cluster_indices]
+            if group_cases:
+                counts = Counter(c.best_model for c in group_cases)
+                filtered_counts = {model: count for model, count in counts.items() if count > 3}
+                centers[gi].best_model = filtered_counts
+                centers[gi].total_weight = sum(filtered_counts.values())
+    return centers
+
+
+def cluster_by_kmeans(
+    cases: List[CaseEntry],
+    method: Optional[str] = "voting",
+    num_clusters: Optional[int] = 6,
+) -> List[ClusterEntry]:
+    """Cluster cases with K-means (AlphaCast.pdf §3.3.5) and return cluster-mean centers."""
+    if not cases:
+        return []
+
+    k = int(num_clusters) if (num_clusters and num_clusters > 0) else 4
+    k = max(1, min(k, len(cases)))
+    window_vectors = np.asarray(
+        [c.window.tolist() if hasattr(c.window, "tolist") else list(c.window) for c in cases],
+        dtype=float,
+    )
+
+    try:
+        from sklearn.cluster import KMeans
+
+        km = KMeans(n_clusters=k, random_state=0, n_init=10)
+        labels = km.fit_predict(window_vectors)
+        centers_arr = km.cluster_centers_
+    except Exception:
+        # Lightweight fallback when sklearn is unavailable.
+        rng = np.random.default_rng(0)
+        centers_arr = window_vectors[rng.choice(len(window_vectors), size=k, replace=False)].copy()
+        labels = np.zeros(len(window_vectors), dtype=int)
+        for _ in range(20):
+            dists = ((window_vectors[:, None, :] - centers_arr[None, :, :]) ** 2).sum(axis=2)
+            labels = dists.argmin(axis=1)
+            for j in range(k):
+                members = window_vectors[labels == j]
+                if len(members):
+                    centers_arr[j] = members.mean(axis=0)
+
+    cluster_indices_list = [[i for i, lab in enumerate(labels) if int(lab) == j] for j in range(k)]
+    cluster_indices_list = [idxs for idxs in cluster_indices_list if idxs]
+    center_windows = [centers_arr[j].tolist() for j in range(len(cluster_indices_list))]
+    print(f"[info] Case-library clustering: K-means (k={len(cluster_indices_list)}) [AlphaCast.pdf]")
+    return _assign_cluster_models(cases, cluster_indices_list, center_windows, method)
+
+
 def cluster_by_kmedoid(
     cases: List[CaseEntry],
     metric: Optional[str] = "cosine",
@@ -188,28 +258,10 @@ def cluster_by_kmedoid(
     medoid_indices = kmedoids_instance.get_medoids()
 
     centers: List[ClusterEntry] = [ClusterEntry(window=cases[i].window, best_model={}, total_weight=0) for i in medoid_indices]
-    
-    if method == "voting":
-        # Assign each center the most frequent model label within its cluster
-        for gi, medoid_idx in enumerate(medoid_indices):
-            cluster_indices = clusters[gi]
-            group_cases = [cases[idx] for idx in cluster_indices]
-            if group_cases:
-                counts = Counter(c.best_model for c in group_cases)
-                centers[gi].best_model = {counts.most_common(1)[0][0]: 1}
-                centers[gi].total_weight = 1
-    elif method == "weighted":
-        # Assign each center the aggregated weights of every model within its cluster
-        for gi, medoid_idx in enumerate(medoid_indices):
-            cluster_indices = clusters[gi]
-            group_cases = [cases[idx] for idx in cluster_indices]
-            if group_cases:
-                counts = Counter(c.best_model for c in group_cases)
-                # centers[gi].best_model = {model: count for model, count in counts.items()}
-                # centers[gi].total_weight = sum(counts.values())
-                # Keep models with count greater than 3
-                filtered_counts = {model: count for model, count in counts.items() if count > 3}
-                centers[gi].best_model = filtered_counts
-                centers[gi].total_weight = sum(filtered_counts.values())
-
-    return centers
+    print(f"[info] Case-library clustering: K-Medoids (k={len(medoid_indices)}) [legacy]")
+    return _assign_cluster_models(
+        cases,
+        clusters,
+        [c.window for c in centers],
+        method,
+    )

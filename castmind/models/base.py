@@ -17,7 +17,6 @@ from ..utils.timefeatures import time_features
 import torch
 import os
 import logging
-from prophet import Prophet
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 from statsmodels.tsa.forecasting.theta import ThetaModel as StatsmodelsTheta
@@ -30,6 +29,11 @@ from statsforecast.models import (
     ZeroModel as SFZeroModel,
 )
 
+try:
+    from prophet import Prophet
+except Exception:  # Prophet/CmdStan optional in side envs
+    Prophet = None  # type: ignore
+
 
 @dataclass
 class _DeepLearningRuntimeContext:
@@ -38,6 +42,20 @@ class _DeepLearningRuntimeContext:
 
 
 _ACTIVE_DL_CONTEXT: Optional[_DeepLearningRuntimeContext] = None
+
+
+def dl_backbone_hparams(model_name: str) -> Dict[str, int]:
+    """Architecture widths matching local DeepLearningCheckpoints (light smoke ckpts)."""
+    name = model_name.strip()
+    if name == "TimesNet":
+        return {"d_model": 16, "d_ff": 32, "e_layers": 2, "n_heads": 8, "d_layers": 1}
+    if name == "PatchTST":
+        return {"d_model": 64, "d_ff": 128, "e_layers": 1, "n_heads": 2, "d_layers": 1}
+    if name == "iTransformer":
+        return {"d_model": 128, "d_ff": 128, "e_layers": 2, "n_heads": 8, "d_layers": 1}
+    if name == "DLinear":
+        return {"d_model": 512, "d_ff": 2048, "e_layers": 2, "n_heads": 8, "d_layers": 1}
+    return {"d_model": 64, "d_ff": 128, "e_layers": 2, "n_heads": 8, "d_layers": 1}
 
 
 def configure_deep_learning_runtime(
@@ -233,12 +251,13 @@ class AutoformerModel(ForecastModel):
         args.features = "S"
         args.target = "real_power"
 
-        # Model core & training hyperparameters (aligned with the provided DLinearModel setup)
-        args.d_model = 64
-        args.n_heads = 8
-        args.e_layers = 2
-        args.d_layers = 1
-        args.d_ff = 128
+        # Model core & training hyperparameters (must match checkpoint)
+        _bb = dl_backbone_hparams("Autoformer")
+        args.d_model = _bb["d_model"]
+        args.n_heads = _bb["n_heads"]
+        args.e_layers = _bb["e_layers"]
+        args.d_layers = _bb["d_layers"]
+        args.d_ff = _bb["d_ff"]
         args.moving_avg = 25
         args.factor = 3
         args.distil = True
@@ -419,11 +438,12 @@ class DLinearModel(ForecastModel):
         args.target = "real_power"
 
         # Keep the remaining hyperparameters identical to training
-        args.d_model = 512
-        args.n_heads = 8
-        args.e_layers = 2
-        args.d_layers = 1
-        args.d_ff = 2048
+        _bb = dl_backbone_hparams("DLinear")
+        args.d_model = _bb["d_model"]
+        args.n_heads = _bb["n_heads"]
+        args.e_layers = _bb["e_layers"]
+        args.d_layers = _bb["d_layers"]
+        args.d_ff = _bb["d_ff"]
         args.moving_avg = 25
         args.factor = 3
         args.distil = True
@@ -594,12 +614,13 @@ class PatchTSTModel(ForecastModel):
         args.features = 'S'
         args.target = 'real_power'
 
-        # Transformer backbone
-        args.d_model = 64
-        args.n_heads = 2
-        args.e_layers = 1
-        args.d_layers = 1
-        args.d_ff = 128
+        # Transformer backbone (must match checkpoint)
+        _bb = dl_backbone_hparams("PatchTST")
+        args.d_model = _bb["d_model"]
+        args.n_heads = _bb["n_heads"]
+        args.e_layers = _bb["e_layers"]
+        args.d_layers = _bb["d_layers"]
+        args.d_ff = _bb["d_ff"]
         args.moving_avg = 25
         args.factor = 3
         args.distil = True
@@ -762,11 +783,12 @@ class TimesNetModel(ForecastModel):
         args.features = "S"
         args.target = "real_power"  # Target name must match training
 
-        args.d_model = 16
-        args.n_heads = 8
-        args.e_layers = 2
-        args.d_layers = 1
-        args.d_ff = 32
+        _bb = dl_backbone_hparams("TimesNet")
+        args.d_model = _bb["d_model"]
+        args.n_heads = _bb["n_heads"]
+        args.e_layers = _bb["e_layers"]
+        args.d_layers = _bb["d_layers"]
+        args.d_ff = _bb["d_ff"]
         args.moving_avg = 25
         args.factor = 3
         args.distil = True
@@ -937,11 +959,12 @@ class iTransformerModel(ForecastModel):
         args.features = "S"
         args.target = "real_power"  # Or your univariate column name (must match training)
 
-        args.d_model = 128
-        args.n_heads = 8
-        args.e_layers = 2
-        args.d_layers = 1
-        args.d_ff = 128
+        _bb = dl_backbone_hparams("iTransformer")
+        args.d_model = _bb["d_model"]
+        args.n_heads = _bb["n_heads"]
+        args.e_layers = _bb["e_layers"]
+        args.d_layers = _bb["d_layers"]
+        args.d_ff = _bb["d_ff"]
         args.moving_avg = 25
         args.factor = 3
         args.distil = True
@@ -1057,6 +1080,11 @@ class ProphetModel(ForecastModel):
             t: Optional time array for time series data
             season_length: Optional season length for seasonality modeling
         """
+        if Prophet is None:
+            raise ImportError(
+                "prophet is not installed in this environment. "
+                "Install prophet/cmdstanpy or use an environment that includes them."
+            )
         logging.getLogger('cmdstanpy').setLevel(logging.WARNING)
         
         # Convert time array to datetime if provided
@@ -1612,7 +1640,8 @@ class ChronosModel:
         except Exception as e:
             raise ImportError("chronos is not installed.") from e
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        model_id = self.local_dir or (self.hf_repo_id or "amazon/chronos-bolt-small")
+        # AlphaCast §4.1 baseline: Chronos bolt-base (not bolt-small).
+        model_id = self.local_dir or (self.hf_repo_id or "amazon/chronos-bolt-base")
         self._pipeline = BaseChronosPipeline.from_pretrained(
             model_id, device_map=device  # dtype parameter removed
         )
@@ -1744,6 +1773,7 @@ class SundialModel:
         """
         import os
         try:
+            self._patch_dynamic_cache()
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
             # Define model path or Hugging Face repository
@@ -1763,13 +1793,35 @@ class SundialModel:
 
     @staticmethod
     def _patch_dynamic_cache() -> None:
-        """transformers>=5 removed DynamicCache.seen_tokens; Sundial still expects it."""
+        """Patch DynamicCache helpers expected by Sundial across transformers 4.x/5.x."""
         try:
             from transformers.cache_utils import DynamicCache
+
             if not hasattr(DynamicCache, "seen_tokens"):
                 DynamicCache.seen_tokens = property(
                     lambda self: self.get_seq_length() if hasattr(self, "get_seq_length") else 0
                 )
+            if not hasattr(DynamicCache, "get_max_length"):
+                def _get_max_length(self):
+                    if hasattr(self, "get_max_cache_shape"):
+                        try:
+                            return self.get_max_cache_shape()
+                        except Exception:
+                            pass
+                    if hasattr(self, "get_seq_length"):
+                        return self.get_seq_length()
+                    return None
+
+                DynamicCache.get_max_length = _get_max_length
+            if not hasattr(DynamicCache, "get_usable_length"):
+                def _get_usable_length(self, new_seq_length=None, layer_idx=0):
+                    if hasattr(self, "get_seq_length"):
+                        prev = self.get_seq_length(layer_idx) if self.get_seq_length.__code__.co_argcount > 1 else self.get_seq_length()
+                    else:
+                        prev = 0
+                    return prev
+
+                DynamicCache.get_usable_length = _get_usable_length
         except Exception:
             pass
 
@@ -1803,15 +1855,25 @@ class SundialModel:
         # Print the output shape for debugging
         # print(f"Output shape: {output.shape}")
         
-        # Take the last 96 values along the final dimension
+        # Take the last h values along the final dimension
         if output.dim() == 3:
-            pred_tokens = output[0, 0, :]   # (96,)
+            # Common Sundial shapes: (batch, samples, pred_len) or (batch, pred_len, ...)
+            if output.shape[-1] == h or output.shape[-1] > h:
+                pred_tokens = output[0, 0, -h:] if output.shape[1] >= 1 else output[0, -h:, 0]
+            else:
+                pred_tokens = output[0, 0, :]
         elif output.dim() == 2:
             pred_tokens = output[0, -h:]    # (h,)
         else:
             raise ValueError(f"Unexpected output shape: {output.shape}")
 
-        return pred_tokens.detach().cpu().numpy()
+        pred = pred_tokens.detach().cpu().numpy().astype(float).reshape(-1)
+        if pred.shape[0] != h:
+            if pred.shape[0] > h:
+                pred = pred[-h:]
+            else:
+                raise RuntimeError(f"Sundial returned {pred.shape[0]} steps, expected {h}.")
+        return pred
     
 def get_default_models() -> List[ForecastModel]:
     models: List[ForecastModel] = [
@@ -1828,6 +1890,8 @@ def get_default_models() -> List[ForecastModel]:
     try:
         import cmdstanpy
 
+        if Prophet is None:
+            raise ImportError("prophet not installed")
         cmdstanpy.cmdstan_path()
         models.insert(3, ProphetModel())
     except Exception:
@@ -1857,7 +1921,9 @@ def get_default_models() -> List[ForecastModel]:
             else:
                 print(
                     "[warn] Skipping Sundial: incompatible with transformers "
-                    f"{transformers.__version__} (need <5)."
+                    f"{transformers.__version__} (need <5). "
+                    "To enable the Sundial baseline, use "
+                    "scripts/run_with_sundial_env.sh (side env; see scripts/setup_sundial_env.sh)."
                 )
         except Exception:
             models.append(SundialModel())
