@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
 from pathlib import Path
@@ -21,6 +22,7 @@ from castmind.agents.runtime import (
     load_resume_state,
     save_resume_state,
 )
+from castmind.agents.knowledge import build_context_lookup, build_knowledge_lookup
 from castmind.eval import align_predictions, mae, mse, smape
 from castmind.tools.analysis import analyze_training
 from castmind.features import extract_target_features, extract_exogenous_features
@@ -33,9 +35,10 @@ def _archive_tag(dataset_name: str) -> str:
         return override
     mode = (os.getenv("ORCHESTRATION_MODE") or "llm").strip().lower()
     runtime = (os.getenv("CASTMIND_RUNTIME") or "main").strip().lower()
+    model = (os.getenv("MODEL") or "llm").strip().lower()
+    model_slug = re.sub(r"[^a-z0-9]+", "", model) or "llm"
     if mode == "llm" and runtime in {"main", "primary", "default"}:
-        # Matches existing main-env DeepSeek LLM archive naming.
-        return f"{dataset_name}_llm_deepseek"
+        return f"{dataset_name}_llm_{model_slug}"
     if mode == "llm" and runtime in {"sundial", "side", "sideenv"}:
         return f"{dataset_name}_llm_sundial"
     if mode == "deterministic" and runtime in {"sundial", "side", "sideenv"}:
@@ -109,10 +112,8 @@ def run_experiment(config_path: str, dataset_selectors: Optional[List[str]] = No
         cfg.datasets = selected
         print(f"[info] Running datasets: {', '.join(ds.name for ds in cfg.datasets)}")
     
-    dataset_briefings: Dict[str, str] = {
-        ds.name: _load_dataset_brief(getattr(ds, "context_prompt_file", None))
-        for ds in cfg.datasets
-    }
+    dataset_briefings: Dict[str, str] = build_context_lookup(cfg.datasets)
+    knowledge_lookup: Dict[str, str] = build_knowledge_lookup([ds.name for ds in cfg.datasets])
 
     # Set up logfire
     # logfire.configure()
@@ -121,17 +122,24 @@ def run_experiment(config_path: str, dataset_selectors: Optional[List[str]] = No
     mode = os.getenv("ORCHESTRATION_MODE", "llm").lower()
     use_agent = mode == "llm"
 
-    agent = build_agent_or_none(cfg, dataset_briefings) if use_agent else None
+    agent = build_agent_or_none(cfg, dataset_briefings, knowledge_lookup) if use_agent else None
     if use_agent and agent is None:
         print("[warn] LLM orchestration unavailable or misconfigured; falling back to deterministic mode.")
 
     rows = []
+    any_resume_required = False
     for ds in cfg.datasets:
         print(f"\n=== Processing dataset: {ds.name} ===")
         dataset_brief = dataset_briefings.get(ds.name, "")
+        knowledge_brief = knowledge_lookup.get(ds.name, "")
         formatted_brief = ""
+        parts = []
+        if knowledge_brief:
+            parts.append("Knowledge (K):\n" + indent(knowledge_brief, "  "))
         if dataset_brief:
-            formatted_brief = "Dataset briefing:\n" + indent(dataset_brief, "  ")
+            parts.append("Context (E):\n" + indent(dataset_brief, "  "))
+        if parts:
+            formatted_brief = "\n\n".join(parts)
         try:
             train_df = pd.read_csv(ds.training_csv)
             train_df[TIME_COL] = pd.to_datetime(train_df[TIME_COL])
@@ -413,8 +421,8 @@ def run_experiment(config_path: str, dataset_selectors: Optional[List[str]] = No
                                    - window_offset: {window_offset},
                                    - frequency: reuse the 'frequency' field from the context (use null if missing),
                                    - start_timestamp: reuse 'prediction_start_timestamp' from the context when provided,
-                                   - selected_features: choose ≥3 feature names from the provided dictionary when available (use [] if none),
-                                   - feature_weights: non-negative weights for those features that sum to 1.0 (use {{}} if none),
+                                   - selected_features: when the Investigator packet already provides `selected_features`, echo that list; otherwise choose ≥3 feature names from the provided dictionary when available (use [] if none),
+                                   - feature_weights: echo Investigator `feature_weights` when present; otherwise non-negative weights for those features that sum to 1.0 (use {{}} if none),
                                    - exogenous_vars / exogenous_feature_selection / exogenous_correlations: when exogenous context is present, echo the listed variables, pick ≥3 dimension names per variable, and report the provided correlations.
 
                             Rules:
@@ -625,6 +633,7 @@ def run_experiment(config_path: str, dataset_selectors: Optional[List[str]] = No
                         pass
 
                 elif llm_failed and resume_required:
+                    any_resume_required = True
                     save_resume_state(
                         ds_out_dir,
                         {
@@ -658,6 +667,13 @@ def run_experiment(config_path: str, dataset_selectors: Optional[List[str]] = No
     if not summary.empty and "dataset" in summary.columns:
         for ds_name in summary["dataset"].astype(str).unique():
             archive_dataset_outputs(cfg.output_dir, ds_name)
+
+    if any_resume_required:
+        print(
+            "[error] One or more datasets stopped with partial LLM progress (resume state saved). "
+            "Exiting with code 1 so shell loops using `|| break` stop correctly."
+        )
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

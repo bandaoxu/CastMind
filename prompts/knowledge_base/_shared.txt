@@ -1,0 +1,22 @@
+# Shared Knowledge Base (K) — conceptual / domain knowledge for AlphaCast-style forecasting
+
+This knowledge base supplies abstract forecasting concepts used by the Generator
+together with dataset-specific empirical notes (when present).
+
+## Conceptual knowledge
+- Time-series forecasting predicts future values of an endogenous target from a
+  look-back window, optionally using exogenous covariates.
+- Useful inductive biases include seasonality (e.g., daily cycles for hourly data),
+  trend, autocorrelation, and regime changes after shocks.
+- Auxiliary statistical / deep / foundation models provide weak supervisory
+  forecasts and case-library references; they are not the final answer.
+- Multi-agent co-reasoning: Investigator selects evidence (including F_selected);
+  Generator produces a raw forecast and chain-of-thought; Reflector audits
+  reliability and may request another round.
+
+## Empirical-pattern guidance (generic)
+- Prefer models that historically win on similar look-back shapes in the case library.
+- When seasonal strength is high, seasonal baselines and seasonal-capable models
+  are often more trustworthy than purely trend-based extrapolations.
+- When volatility is high, avoid over-confident point adjustments far from the
+  auxiliary reference prediction without supporting exogenous evidence.

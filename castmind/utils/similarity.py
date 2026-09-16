@@ -207,46 +207,38 @@ def top1_most_similar(query: np.ndarray, candidates: List[Tuple[np.ndarray, str]
     return best_model or "SeasonalNaive", best_sim
 
 def top1_most_similar_neighbor(query: np.ndarray, candidates: List[Tuple[np.ndarray, np.ndarray]]) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Enhanced neighbor selection that relies on the composite similarity metric.
-    """
+    """Paper Eq. (7): X_neighbor = argmin_i ||X_endo - H_i||_2 on look-back windows."""
     if len(candidates) == 0:
         return query, query  # Return the query as a default
-    
+
     best_lookback = None
     best_pred = None
-    best_sim = -1.0
-    
+    best_dist = float("inf")
+    q = np.asarray(query, dtype=float)
+
     for lookback, pred in candidates:
         try:
-            # Use the composite similarity metric
-            sim = comprehensive_similarity(query, lookback)
-            
-            if sim > best_sim:
-                best_sim = sim
+            dist = euclidean_distance(q, np.asarray(lookback, dtype=float))
+            if dist < best_dist:
+                best_dist = dist
                 best_lookback = lookback
                 best_pred = pred
-                
-        except Exception as e:
-            # Fall back to the original cosine similarity approach on failure
-            sim = cosine_similarity(zscore(query), zscore(lookback))
-            if sim > best_sim:
-                best_sim = sim
-                best_lookback = lookback
-                best_pred = pred
-    
+        except Exception:
+            continue
+
     # If no suitable neighbor is found, return the query itself
     if best_lookback is None or best_pred is None:
         return query, query
-    
+
     return best_lookback, best_pred
 
 def top1_most_similar_cluster(query: np.ndarray, candidates: List[ClusterEntry]) -> ClusterEntry:
+    """Paper Eq. (7): c_m = argmin_j ||X_endo - c_j||_2 (nearest cluster center)."""
     best_cluster = None
-    best_sim = -1.0
+    best_dist = float("inf")
     for cluster in candidates:
-        sim = euclidean_distance(query, np.asarray(cluster.window, dtype=float))
-        if sim > best_sim:
-            best_sim = sim
+        dist = euclidean_distance(query, np.asarray(cluster.window, dtype=float))
+        if dist < best_dist:
+            best_dist = dist
             best_cluster = cluster
     return best_cluster or candidates[0]

@@ -1,0 +1,216 @@
+{
+  "source": "AlphaCast arXiv:2511.08947 Table 1",
+  "note": "Paper numbers for comparison only. Local protocol/method set aligns with Table 1; MSE/MAE may differ due to light self-trained DL checkpoints (no author weights), DeepSeek instead of GPT-5, EPF partial coverage, and WP/SP/MOPEX proxy data.",
+  "datasets": {
+    "EPF_BE": {
+      "paper_key": "BE",
+      "methods": {
+        "AlphaCast": {"MSE": 536.454, "MAE": 9.612},
+        "Sundial": {"MSE": 651.237, "MAE": 10.997},
+        "Chronos": {"MSE": 625.634, "MAE": 9.623},
+        "DLinear": {"MSE": 658.530, "MAE": 12.833},
+        "PatchTST": {"MSE": 627.149, "MAE": 11.435},
+        "TimesNet": {"MSE": 636.660, "MAE": 11.300},
+        "TimeXer": {"MSE": 702.862, "MAE": 10.700},
+        "Transformer": {"MSE": 606.528, "MAE": 11.242},
+        "Autoformer": {"MSE": 890.843, "MAE": 16.619},
+        "Prophet": {"MSE": 992.900, "MAE": 16.942},
+        "SNaive": {"MSE": 857.119, "MAE": 13.704},
+        "ARIMA": {"MSE": 869.444, "MAE": 17.038},
+        "CES": {"MSE": 808.608, "MAE": 14.414},
+        "CrostonClassic": {"MSE": 927.984, "MAE": 17.597},
+        "Optimizers": {"MSE": 750.780, "MAE": 12.839},
+        "HistoricAverage": {"MSE": 745.450, "MAE": 16.741}
+      }
+    },
+    "EPF_DE": {
+      "paper_key": "DE",
+      "methods": {
+        "AlphaCast": {"MSE": 193.829, "MAE": 9.925},
+        "Sundial": {"MSE": 264.618, "MAE": 10.707},
+        "Chronos": {"MSE": 223.153, "MAE": 9.999},
+        "DLinear": {"MSE": 239.928, "MAE": 12.833},
+        "PatchTST": {"MSE": 208.888, "MAE": 10.042},
+        "TimesNet": {"MSE": 209.366, "MAE": 10.197},
+        "TimeXer": {"MSE": 252.001, "MAE": 10.259},
+        "Transformer": {"MSE": 229.955, "MAE": 10.227},
+        "Autoformer": {"MSE": 331.306, "MAE": 13.329},
+        "Prophet": {"MSE": 320.631, "MAE": 13.254},
+        "SNaive": {"MSE": 415.723, "MAE": 13.362},
+        "ARIMA": {"MSE": 372.910, "MAE": 11.816},
+        "CES": {"MSE": 315.576, "MAE": 11.451},
+        "CrostonClassic": {"MSE": 294.443, "MAE": 12.983},
+        "Optimizers": {"MSE": 424.497, "MAE": 12.532},
+        "HistoricAverage": {"MSE": 381.713, "MAE": 14.568}
+      }
+    },
+    "EPF_FR": {
+      "paper_key": "FR",
+      "methods": {
+        "AlphaCast": {"MSE": 721.023, "MAE": 7.133},
+        "Sundial": {"MSE": 942.081, "MAE": 8.536},
+        "Chronos": {"MSE": 803.076, "MAE": 7.536},
+        "DLinear": {"MSE": 811.453, "MAE": 10.449},
+        "PatchTST": {"MSE": 797.263, "MAE": 9.126},
+        "TimesNet": {"MSE": 929.100, "MAE": 11.099},
+        "TimeXer": {"MSE": 834.693, "MAE": 9.377},
+        "Transformer": {"MSE": 940.227, "MAE": 11.093},
+        "Autoformer": {"MSE": 934.364, "MAE": 13.362},
+        "Prophet": {"MSE": 1035.704, "MAE": 14.422},
+        "SNaive": {"MSE": 915.798, "MAE": 11.155},
+        "ARIMA": {"MSE": 963.997, "MAE": 13.224},
+        "CES": {"MSE": 1084.713, "MAE": 12.144},
+        "CrostonClassic": {"MSE": 1020.099, "MAE": 15.158},
+        "Optimizers": {"MSE": 855.155, "MAE": 11.204},
+        "HistoricAverage": {"MSE": 955.659, "MAE": 14.634}
+      }
+    },
+    "EPF_NP": {
+      "paper_key": "NP",
+      "methods": {
+        "AlphaCast": {"MSE": 27.113, "MAE": 3.145},
+        "Sundial": {"MSE": 28.667, "MAE": 3.362},
+        "Chronos": {"MSE": 22.180, "MAE": 3.176},
+        "DLinear": {"MSE": 32.215, "MAE": 3.842},
+        "PatchTST": {"MSE": 24.634, "MAE": 3.266},
+        "TimesNet": {"MSE": 32.116, "MAE": 3.805},
+        "TimeXer": {"MSE": 27.306, "MAE": 3.436},
+        "Transformer": {"MSE": 27.088, "MAE": 3.434},
+        "Autoformer": {"MSE": 46.097, "MAE": 4.856},
+        "Prophet": {"MSE": 57.794, "MAE": 4.999},
+        "SNaive": {"MSE": 44.893, "MAE": 4.102},
+        "ARIMA": {"MSE": 55.507, "MAE": 4.445},
+        "CES": {"MSE": 40.776, "MAE": 3.993},
+        "CrostonClassic": {"MSE": 47.462, "MAE": 4.804},
+        "Optimizers": {"MSE": 68.113, "MAE": 4.782},
+        "HistoricAverage": {"MSE": 54.432, "MAE": 5.225}
+      }
+    },
+    "EPF_PJM": {
+      "paper_key": "PJM",
+      "methods": {
+        "AlphaCast": {"MSE": 25.151, "MAE": 3.596},
+        "Sundial": {"MSE": 30.704, "MAE": 3.987},
+        "Chronos": {"MSE": 25.695, "MAE": 3.630},
+        "DLinear": {"MSE": 42.154, "MAE": 4.645},
+        "PatchTST": {"MSE": 31.874, "MAE": 4.166},
+        "TimesNet": {"MSE": 34.890, "MAE": 4.342},
+        "TimeXer": {"MSE": 25.876, "MAE": 3.651},
+        "Transformer": {"MSE": 35.131, "MAE": 4.373},
+        "Autoformer": {"MSE": 77.570, "MAE": 6.426},
+        "Prophet": {"MSE": 52.261, "MAE": 5.533},
+        "SNaive": {"MSE": 41.387, "MAE": 4.648},
+        "ARIMA": {"MSE": 33.021, "MAE": 4.004},
+        "CES": {"MSE": 38.327, "MAE": 4.467},
+        "CrostonClassic": {"MSE": 99.401, "MAE": 7.819},
+        "Optimizers": {"MSE": 36.066, "MAE": 4.304},
+        "HistoricAverage": {"MSE": 108.607, "MAE": 8.101}
+      }
+    },
+    "ETTh1": {
+      "paper_key": "ETTh",
+      "methods": {
+        "AlphaCast": {"MSE": 7.641, "MAE": 2.017},
+        "Sundial": {"MSE": 9.437, "MAE": 2.314},
+        "Chronos": {"MSE": 9.397, "MAE": 2.250},
+        "DLinear": {"MSE": 8.506, "MAE": 2.239},
+        "PatchTST": {"MSE": 8.396, "MAE": 2.169},
+        "TimesNet": {"MSE": 7.940, "MAE": 2.079},
+        "TimeXer": {"MSE": 8.765, "MAE": 2.204},
+        "Transformer": {"MSE": 8.307, "MAE": 2.136},
+        "Autoformer": {"MSE": 11.598, "MAE": 2.637},
+        "Prophet": {"MSE": 46.697, "MAE": 4.592},
+        "SNaive": {"MSE": 10.753, "MAE": 2.469},
+        "ARIMA": {"MSE": 10.879, "MAE": 2.429},
+        "CES": {"MSE": 24.218, "MAE": 3.646},
+        "CrostonClassic": {"MSE": 9.719, "MAE": 2.331},
+        "Optimizers": {"MSE": 11.772, "MAE": 2.541},
+        "HistoricAverage": {"MSE": 10.309, "MAE": 2.571}
+      }
+    },
+    "ETTm1": {
+      "paper_key": "ETTm",
+      "methods": {
+        "AlphaCast": {"MSE": 2.414, "MAE": 1.057},
+        "Sundial": {"MSE": 3.211, "MAE": 1.258},
+        "Chronos": {"MSE": 2.749, "MAE": 1.180},
+        "DLinear": {"MSE": 2.631, "MAE": 1.138},
+        "PatchTST": {"MSE": 2.622, "MAE": 1.114},
+        "TimesNet": {"MSE": 2.439, "MAE": 1.066},
+        "TimeXer": {"MSE": 2.557, "MAE": 1.113},
+        "Transformer": {"MSE": 3.136, "MAE": 1.277},
+        "Autoformer": {"MSE": 4.224, "MAE": 1.571},
+        "Prophet": {"MSE": 21.183, "MAE": 3.113},
+        "SNaive": {"MSE": 2.746, "MAE": 1.186},
+        "ARIMA": {"MSE": 2.709, "MAE": 1.168},
+        "CES": {"MSE": 4.124, "MAE": 1.483},
+        "CrostonClassic": {"MSE": 3.287, "MAE": 1.365},
+        "Optimizers": {"MSE": 3.533, "MAE": 1.261},
+        "HistoricAverage": {"MSE": 3.298, "MAE": 1.306}
+      }
+    },
+    "windy_power": {
+      "paper_key": "Windy Power",
+      "methods": {
+        "AlphaCast": {"MSE": 1548.825, "MAE": 24.540},
+        "Sundial": {"MSE": 2167.943, "MAE": 31.218},
+        "Chronos": {"MSE": 2268.519, "MAE": 29.617},
+        "DLinear": {"MSE": 1932.200, "MAE": 29.325},
+        "PatchTST": {"MSE": 2269.641, "MAE": 32.462},
+        "TimesNet": {"MSE": 1930.876, "MAE": 29.398},
+        "TimeXer": {"MSE": 2169.818, "MAE": 31.914},
+        "Transformer": {"MSE": 2063.985, "MAE": 29.893},
+        "Autoformer": {"MSE": 2567.613, "MAE": 37.002},
+        "Prophet": {"MSE": 8071.244, "MAE": 56.059},
+        "SNaive": {"MSE": 1948.056, "MAE": 27.876},
+        "ARIMA": {"MSE": 2166.644, "MAE": 28.767},
+        "CES": {"MSE": 9364.980, "MAE": 42.040},
+        "CrostonClassic": {"MSE": 2206.911, "MAE": 32.036},
+        "Optimizers": {"MSE": 2277.535, "MAE": 29.878},
+        "HistoricAverage": {"MSE": 2671.839, "MAE": 36.529}
+      }
+    },
+    "sunny_power": {
+      "paper_key": "Sunny Power",
+      "methods": {
+        "AlphaCast": {"MSE": 13.294, "MAE": 1.843},
+        "Sundial": {"MSE": 100.304, "MAE": 6.687},
+        "Chronos": {"MSE": 79.245, "MAE": 4.566},
+        "DLinear": {"MSE": 19.058, "MAE": 2.735},
+        "PatchTST": {"MSE": 19.435, "MAE": 2.782},
+        "TimesNet": {"MSE": 18.426, "MAE": 2.781},
+        "TimeXer": {"MSE": 20.114, "MAE": 2.915},
+        "Transformer": {"MSE": 17.956, "MAE": 2.673},
+        "Autoformer": {"MSE": 39.129, "MAE": 4.339},
+        "Prophet": {"MSE": 64.807, "MAE": 6.442},
+        "SNaive": {"MSE": 79.611, "MAE": 4.558},
+        "ARIMA": {"MSE": 80.478, "MAE": 4.598},
+        "CES": {"MSE": 78.713, "MAE": 4.555},
+        "CrostonClassic": {"MSE": 84.788, "MAE": 8.250},
+        "Optimizers": {"MSE": 78.985, "MAE": 4.558},
+        "HistoricAverage": {"MSE": 59.759, "MAE": 6.130}
+      }
+    },
+    "MOPEX": {
+      "paper_key": "MOPEX",
+      "methods": {
+        "AlphaCast": {"MSE": 4.771, "MAE": 1.353},
+        "Sundial": {"MSE": 5.149, "MAE": 1.422},
+        "Chronos": {"MSE": 5.283, "MAE": 1.307},
+        "DLinear": {"MSE": 5.256, "MAE": 1.333},
+        "PatchTST": {"MSE": 5.358, "MAE": 1.439},
+        "TimesNet": {"MSE": 4.955, "MAE": 1.350},
+        "TimeXer": {"MSE": 4.825, "MAE": 1.277},
+        "Transformer": {"MSE": 4.883, "MAE": 1.337},
+        "Autoformer": {"MSE": 6.168, "MAE": 1.958},
+        "Prophet": {"MSE": 12.395, "MAE": 2.503},
+        "SNaive": {"MSE": 7.180, "MAE": 1.619},
+        "ARIMA": {"MSE": 9.190, "MAE": 1.852},
+        "CES": {"MSE": 6.399, "MAE": 1.470},
+        "CrostonClassic": {"MSE": 5.322, "MAE": 1.449},
+        "Optimizers": {"MSE": 8.064, "MAE": 1.777},
+        "HistoricAverage": {"MSE": 6.142, "MAE": 1.709}
+      }
+    }
+  }
+}

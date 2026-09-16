@@ -101,7 +101,8 @@ def prepare_epf(name: str) -> None:
     value_cols = [c for c in df.columns if c != "date"]
     if len(value_cols) < 3:
         raise ValueError(f"{name}: expected price + 2 exogenous columns, got {value_cols}")
-    exo1, exo2, price = value_cols[0], value_cols[1], value_cols[2]
+    # epftoolbox/Zenodo order: Price, Exogenous1, Exogenous2 (NOT exo then price).
+    price, exo1, exo2 = value_cols[0], value_cols[1], value_cols[2]
     # Price must be last so infer_target_column picks it.
     out = pd.DataFrame(
         {
@@ -148,7 +149,12 @@ def _solar_power(radiation: pd.Series) -> pd.Series:
 
 
 def prepare_power(kind: str) -> None:
-    """Build 15-min wind/solar series from Open-Meteo (iFLYTEK contest files are not public)."""
+    """Build 15-min wind/solar stand-in from Open-Meteo.
+
+    iFLYTEK contest files are not public. MemCast's Google Drive pack also lacks
+    Windy/Sunny (see scripts/memcast_drive_inventory.json). For paper-aligned CSVs,
+    use scripts/import_aligned_dataset.py once you obtain the real series.
+    """
     if kind == "windy_power":
         lat, lon = 43.85, 87.62
         out_name = "windy_power"

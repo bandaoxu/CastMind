@@ -22,6 +22,7 @@ from statsmodels.tsa.holtwinters import ExponentialSmoothing
 from statsmodels.tsa.forecasting.theta import ThetaModel as StatsmodelsTheta
 from statsforecast import StatsForecast
 from statsforecast.models import (
+    AutoARIMA as SFAutoARIMA,
     AutoCES as SFAutoCES,
     AutoETS as SFAutoETS,
     CrostonClassic as SFCrostonClassic,
@@ -31,7 +32,7 @@ from statsforecast.models import (
 
 try:
     from prophet import Prophet
-except Exception:  # Prophet/CmdStan optional in side envs
+except Exception:  # Prophet/CmdStan optional if not installed in this env
     Prophet = None  # type: ignore
 
 
@@ -39,20 +40,55 @@ except Exception:  # Prophet/CmdStan optional in side envs
 class _DeepLearningRuntimeContext:
     checkpoints: Dict[str, str]
     pred_len: Optional[int] = None
+    dl_preset: str = "light"
 
 
 _ACTIVE_DL_CONTEXT: Optional[_DeepLearningRuntimeContext] = None
 
 
-def dl_backbone_hparams(model_name: str) -> Dict[str, int]:
-    """Architecture widths matching local DeepLearningCheckpoints (light smoke ckpts)."""
+def _infer_dl_preset(checkpoints: Optional[Dict[str, str]]) -> str:
+    env = (os.getenv("CASTMIND_DL_PRESET") or "").strip().lower()
+    if env in {"light", "official"}:
+        return env
+    # TSLib / AlphaCast-guide checkpoints live under DeepLearningCheckpoints/<ds>/
+    for path in (checkpoints or {}).values():
+        p = str(path).replace("\\", "/")
+        if "DeepLearningCheckpoints" in p:
+            return "official"
+    return "light"
+
+
+def dl_backbone_hparams(model_name: str, preset: Optional[str] = None) -> Dict[str, int]:
+    """Architecture widths for local checkpoints.
+
+    preset=light: tiny smoke widths.
+    preset=official: AlphaCast upstream / TSLib guide widths (freq=t training).
+    """
     name = model_name.strip()
+    resolved = (preset or _resolve_dl_preset()).strip().lower()
+    if resolved == "official":
+        # Match alphacast/models/base.py + train_checkpoints.sh guide.
+        if name == "TimesNet":
+            return {"d_model": 16, "d_ff": 32, "e_layers": 2, "n_heads": 8, "d_layers": 1}
+        if name == "PatchTST":
+            return {"d_model": 512, "d_ff": 2048, "e_layers": 1, "n_heads": 2, "d_layers": 1}
+        if name == "iTransformer":
+            return {"d_model": 128, "d_ff": 128, "e_layers": 2, "n_heads": 8, "d_layers": 1}
+        if name == "TimeXer":
+            return {"d_model": 256, "d_ff": 512, "e_layers": 2, "n_heads": 8, "d_layers": 1}
+        if name == "DLinear":
+            return {"d_model": 512, "d_ff": 2048, "e_layers": 2, "n_heads": 8, "d_layers": 1}
+        # Autoformer and fallback
+        return {"d_model": 512, "d_ff": 2048, "e_layers": 2, "n_heads": 8, "d_layers": 1}
+
     if name == "TimesNet":
         return {"d_model": 16, "d_ff": 32, "e_layers": 2, "n_heads": 8, "d_layers": 1}
     if name == "PatchTST":
         return {"d_model": 64, "d_ff": 128, "e_layers": 1, "n_heads": 2, "d_layers": 1}
     if name == "iTransformer":
         return {"d_model": 128, "d_ff": 128, "e_layers": 2, "n_heads": 8, "d_layers": 1}
+    if name == "TimeXer":
+        return {"d_model": 64, "d_ff": 128, "e_layers": 1, "n_heads": 4, "d_layers": 1}
     if name == "DLinear":
         return {"d_model": 512, "d_ff": 2048, "e_layers": 2, "n_heads": 8, "d_layers": 1}
     return {"d_model": 64, "d_ff": 128, "e_layers": 2, "n_heads": 8, "d_layers": 1}
@@ -61,6 +97,7 @@ def dl_backbone_hparams(model_name: str) -> Dict[str, int]:
 def configure_deep_learning_runtime(
     checkpoints: Optional[Dict[str, str]],
     pred_len: Optional[int],
+    dl_preset: Optional[str] = None,
 ) -> None:
     """Register dataset-specific resources for deep learning models."""
     global _ACTIVE_DL_CONTEXT
@@ -72,11 +109,23 @@ def configure_deep_learning_runtime(
     for alias, path in (checkpoints or {}).items():
         if not path:
             continue
-        normalized[str(alias).lower()] = path
+        p = str(path)
+        if not os.path.exists(p) and "_official" in p.replace("\\", "/"):
+            light = p.replace("_official", "")
+            if os.path.exists(light):
+                p = light
+        if os.path.exists(p):
+            normalized[str(alias).lower()] = p
+
+    env_preset = (dl_preset or (os.getenv("CASTMIND_DL_PRESET") or "").strip().lower() or None)
+    if env_preset not in {"light", "official", None}:
+        env_preset = None
 
     _ACTIVE_DL_CONTEXT = _DeepLearningRuntimeContext(
         checkpoints=normalized,
         pred_len=int(pred_len) if pred_len is not None else None,
+        # Default hint; checkpoint paths under DeepLearningCheckpoints → official (guide).
+        dl_preset=env_preset or _infer_dl_preset(normalized),
     )
 
 
@@ -97,6 +146,24 @@ def _resolve_pred_len(default: int) -> int:
         return int(default)
     return int(ctx.pred_len)
 
+
+def _resolve_dl_preset(alias: Optional[str] = None) -> str:
+    """Resolve widths preset: CASTMIND_DL_PRESET, else official for configured ckpts."""
+    env = (os.getenv("CASTMIND_DL_PRESET") or "").strip().lower()
+    if env in {"light", "official"}:
+        return env
+    ctx = _active_dl_context()
+    if alias and ctx is not None:
+        path = ctx.checkpoints.get(str(alias).lower())
+        if path:
+            p = str(path).replace("\\", "/")
+            if "_official" in p or "DeepLearningCheckpoints" in p:
+                return "official"
+            return "light"
+    if ctx is not None and ctx.dl_preset in {"light", "official"}:
+        return ctx.dl_preset
+    return "light"
+
 class ForecastModel(Protocol):
     alias: str
 
@@ -108,24 +175,31 @@ class ForecastModel(Protocol):
 @dataclass
 class ArimaModel(ForecastModel):
     alias: str = "AutoARIMA"
-    order: Optional[Tuple[int, int, int]] = None
-    seasonal_order: Optional[Tuple[int, int, int, int]] = None
+    season_length: Optional[int] = None
 
     _fitted: Optional[any] = None
 
     def fit(self, y: np.ndarray, season_length: Optional[int] = None, **kwargs) -> None:
-        # Simple heuristic ARIMA: try (p,d,q)=(1,1,1) and seasonal if season_length provided
-        order = self.order or (1, 1, 1)
-        if season_length and season_length > 1:
-            seasonal_order = self.seasonal_order or (1, 1, 1, int(season_length))
-        else:
-            seasonal_order = (0, 0, 0, 0)
-        self._fitted = ARIMA(y, order=order, seasonal_order=seasonal_order).fit()
+        season_len = int(season_length or self.season_length or 1)
+        t = kwargs.get("timestamps", None)
+        if t is None:
+            raise ValueError(f"{self.alias} model requires timestamps for StatsForecast fitting")
+        t = pd.to_datetime(t)
+        df = pd.DataFrame({
+            "unique_id": self.alias,
+            "ds": t,
+            "y": y,
+        })
+        self._fitted = StatsForecast(
+            models=[SFAutoARIMA(season_length=max(1, season_len), alias=self.alias)],
+            freq=pd.infer_freq(t),
+        )
+        self._fitted.fit(df)
 
     def predict(self, h: int, **kwargs) -> np.ndarray:
         assert self._fitted is not None
-        fcst = self._fitted.forecast(steps=h)
-        return np.asarray(fcst, dtype=float)
+        fcst_df = self._fitted.predict(h=h)
+        return np.asarray(fcst_df[self.alias], dtype=float)
 
 
 @dataclass
@@ -188,7 +262,7 @@ class AutoformerModel(ForecastModel):
 
     # Runtime device and decoder history length
     label_len: int = 48
-    timefeat_freq: str = "h"   # Must match checkpoint training (freq_map: h->4, t/min->5)
+    timefeat_freq: str = "t"   # Must match TSLib/AlphaCast-guide checkpoints (freq_map: t->5)
 
     # Runtime cache
     _model: Optional[torch.nn.Module] = None
@@ -231,7 +305,7 @@ class AutoformerModel(ForecastModel):
         args.task_name = "long_term_forecast"
         args.is_training = 0
         args.model = "Autoformer"
-        args.freq = "h"                 # Must match checkpoint training (freq_map: h->4)
+        args.freq = "t"                 # Must match TSLib/AlphaCast-guide checkpoints (freq_map: t->5)
         args.checkpoints = "./checkpoints/"
         args.seq_len = L
         args.label_len = 48
@@ -252,7 +326,7 @@ class AutoformerModel(ForecastModel):
         args.target = "real_power"
 
         # Model core & training hyperparameters (must match checkpoint)
-        _bb = dl_backbone_hparams("Autoformer")
+        _bb = dl_backbone_hparams("Autoformer", _resolve_dl_preset("Autoformer"))
         args.d_model = _bb["d_model"]
         args.n_heads = _bb["n_heads"]
         args.e_layers = _bb["e_layers"]
@@ -373,7 +447,7 @@ class DLinearModel(ForecastModel):
 
     # Runtime device and decoder history length
     label_len: int = 48           
-    timefeat_freq: str = "h"      # Must match checkpoint training (freq_map: h->4, t/min->5)
+    timefeat_freq: str = "t"      # Must match TSLib/AlphaCast-guide checkpoints (freq_map: t->5)
 
     # Runtime cache
     _model: Optional[torch.nn.Module] = None
@@ -417,7 +491,7 @@ class DLinearModel(ForecastModel):
         args.task_name = "long_term_forecast"
         args.is_training = 0
         args.model = "DLinear"
-        args.freq = "h"
+        args.freq = "t"
         args.checkpoints = "./checkpoints/"
         args.seq_len = L
         args.label_len = 48  # Slightly more stable
@@ -438,7 +512,7 @@ class DLinearModel(ForecastModel):
         args.target = "real_power"
 
         # Keep the remaining hyperparameters identical to training
-        _bb = dl_backbone_hparams("DLinear")
+        _bb = dl_backbone_hparams("DLinear", _resolve_dl_preset("DLinear"))
         args.d_model = _bb["d_model"]
         args.n_heads = _bb["n_heads"]
         args.e_layers = _bb["e_layers"]
@@ -548,7 +622,7 @@ class PatchTSTModel(ForecastModel):
     # Runtime device and decoder history length
     label_len: int = 48              # Training previously used 84; adjust as needed (≤ seq_len)
     # Encoder time-feature frequency (match training; use 't' for minutes or '15min' if supported)
-    timefeat_freq: str = "h"
+    timefeat_freq: str = "t"
 
 
     # Runtime cache
@@ -590,7 +664,7 @@ class PatchTSTModel(ForecastModel):
         args.is_training = 0
         args.model = 'PatchTST'
         
-        args.freq = 'h'
+        args.freq = 't'
         args.checkpoints = './checkpoints/'
 
         # Lengths: seq_len=L, label_len≤L, pred_len is set during predict(h)
@@ -615,7 +689,7 @@ class PatchTSTModel(ForecastModel):
         args.target = 'real_power'
 
         # Transformer backbone (must match checkpoint)
-        _bb = dl_backbone_hparams("PatchTST")
+        _bb = dl_backbone_hparams("PatchTST", _resolve_dl_preset("PatchTST"))
         args.d_model = _bb["d_model"]
         args.n_heads = _bb["n_heads"]
         args.e_layers = _bb["e_layers"]
@@ -715,7 +789,7 @@ class TimesNetModel(ForecastModel):
 
     # Runtime configuration
     label_len: int = 48         # Training used 84
-    timefeat_freq: str = "h"     # Must match checkpoint training (freq_map: h->4, t/min->5)
+    timefeat_freq: str = "t"     # Must match TSLib/AlphaCast-guide checkpoints (freq_map: t->5)
 
     # Runtime cache
     _model: Optional[torch.nn.Module] = None
@@ -760,7 +834,7 @@ class TimesNetModel(ForecastModel):
         args.task_name = "long_term_forecast"
         args.is_training = 0
         args.model = "TimesNet"
-        args.freq = 'h'
+        args.freq = 't'
         args.checkpoints = "./checkpoints/"
 
         args.seq_len = L
@@ -783,7 +857,7 @@ class TimesNetModel(ForecastModel):
         args.features = "S"
         args.target = "real_power"  # Target name must match training
 
-        _bb = dl_backbone_hparams("TimesNet")
+        _bb = dl_backbone_hparams("TimesNet", _resolve_dl_preset("TimesNet"))
         args.d_model = _bb["d_model"]
         args.n_heads = _bb["n_heads"]
         args.e_layers = _bb["e_layers"]
@@ -892,7 +966,7 @@ class iTransformerModel(ForecastModel):
 
     # Runtime configuration
     label_len: int = 48          # Training used 84; automatically align with seq_len
-    timefeat_freq: str = "h"     # Must match checkpoint training (freq_map: h->4, t/min->5)
+    timefeat_freq: str = "t"     # Must match TSLib/AlphaCast-guide checkpoints (freq_map: t->5)
 
     # Runtime cache
     _model: Optional[torch.nn.Module] = None
@@ -936,7 +1010,7 @@ class iTransformerModel(ForecastModel):
         args.task_name = "long_term_forecast"
         args.is_training = 0
         args.model = "iTransformer"
-        args.freq = 'h'
+        args.freq = 't'
         args.checkpoints = "./checkpoints/"
 
         args.seq_len = L
@@ -959,7 +1033,7 @@ class iTransformerModel(ForecastModel):
         args.features = "S"
         args.target = "real_power"  # Or your univariate column name (must match training)
 
-        _bb = dl_backbone_hparams("iTransformer")
+        _bb = dl_backbone_hparams("iTransformer", _resolve_dl_preset("iTransformer"))
         args.d_model = _bb["d_model"]
         args.n_heads = _bb["n_heads"]
         args.e_layers = _bb["e_layers"]
@@ -1059,7 +1133,128 @@ class iTransformerModel(ForecastModel):
         if y_hat.shape[0] != h:
             raise RuntimeError(f"ITransformerModel returned {y_hat.shape[0]} steps, expected {h}.")
         return y_hat
-    
+
+
+@dataclass
+class TimeXerModel(ForecastModel):
+    """TimeXer wrapper (Table 1 baseline). Uses features=M + enc_in=1 for univariate."""
+
+    alias: str = "TimeXer"
+    model_path: str = ""
+    label_len: int = 48
+    timefeat_freq: str = "t"
+    patch_len: int = 16
+
+    _model: Optional[torch.nn.Module] = None
+    _args: Optional[object] = None
+    _x_enc: Optional[torch.Tensor] = None
+    _x_mark_enc: Optional[torch.Tensor] = None
+    _enc_len: int = 0
+    _device: str = "cpu"
+    _train_pred_len: int = 96
+
+    def _build_x_mark(self, ts_list) -> torch.Tensor:
+        df = pd.DataFrame({"date": pd.to_datetime(list(ts_list))})
+        stamp = time_features(pd.to_datetime(df["date"].values), freq=self.timefeat_freq)
+        stamp = stamp.transpose(1, 0)
+        return torch.from_numpy(np.asarray(stamp)).float().unsqueeze(0)
+
+    def fit(self, y: np.ndarray, season_length: Optional[int] = None, **kwargs) -> None:
+        ts = kwargs.get("timestamps")
+        if ts is None:
+            raise ValueError("TimeXerModel.fit requires 'timestamps' aligned with y.")
+
+        self._device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        y = np.asarray(y, dtype=np.float32)
+        if y.ndim == 1:
+            y = y[:, None]
+        L, C = y.shape
+        if C != 1:
+            raise ValueError(f"TimeXerModel expects univariate input (enc_in=1), got enc_in={C}")
+        if L % self.patch_len != 0:
+            raise ValueError(
+                f"TimeXerModel requires seq_len divisible by patch_len={self.patch_len}, got L={L}"
+            )
+
+        self._enc_len = L
+        self._x_enc = torch.tensor(y, dtype=torch.float32).unsqueeze(0).to(self._device)
+        self._x_mark_enc = self._build_x_mark(ts).to(self._device)
+
+        class Args:
+            pass
+
+        args = Args()
+        args.task_name = "long_term_forecast"
+        args.is_training = 0
+        args.model = "TimeXer"
+        args.freq = "t"
+        args.seq_len = L
+        args.label_len = min(self.label_len, L)
+        args.pred_len = _resolve_pred_len(96)
+        self._train_pred_len = int(args.pred_len)
+
+        args.enc_in = 1
+        args.dec_in = 1
+        args.c_out = 1
+        # M path uses forecast_multi; works for univariate enc_in=1.
+        args.features = "M"
+        args.embed = "timeF"
+        args.activation = "gelu"
+        args.dropout = 0.1
+        args.factor = 3
+        args.output_attention = False
+        args.use_norm = 1
+        args.patch_len = self.patch_len
+
+        _bb = dl_backbone_hparams("TimeXer", _resolve_dl_preset("TimeXer"))
+        args.d_model = _bb["d_model"]
+        args.n_heads = _bb["n_heads"]
+        args.e_layers = _bb["e_layers"]
+        args.d_layers = _bb["d_layers"]
+        args.d_ff = _bb["d_ff"]
+        self._args = args
+
+        runtime_path = _resolve_checkpoint(self.alias)
+        if runtime_path:
+            self.model_path = runtime_path
+        if not self.model_path:
+            raise FileNotFoundError(
+                "TimeXer checkpoint path is not configured for the active dataset."
+            )
+        if not os.path.exists(self.model_path):
+            raise FileNotFoundError(f"checkpoint not found: {self.model_path}")
+
+        self._model = TimeXer(args).to(self._device)
+        try:
+            state = torch.load(self.model_path, map_location=self._device, weights_only=True)
+        except TypeError:
+            state = torch.load(self.model_path, map_location=self._device)
+        if isinstance(state, dict) and "state_dict" in state:
+            state = state["state_dict"]
+        missing, unexpected = self._model.load_state_dict(state, strict=False)
+        if missing or unexpected:
+            print(f"[TimeXer] missing_keys={len(missing)}, unexpected_keys={len(unexpected)}")
+        self._model.eval()
+
+    def predict(self, h: int, **kwargs) -> np.ndarray:
+        if self._model is None or self._args is None or self._x_enc is None or self._x_mark_enc is None:
+            raise RuntimeError("TimeXerModel not fitted.")
+
+        # Head is fixed to training pred_len; predict full horizon then truncate.
+        need = int(self._train_pred_len)
+        with torch.no_grad():
+            out = self._model(self._x_enc, self._x_mark_enc, 1, 1)
+            if isinstance(out, tuple):
+                out = out[0]
+            if out.ndim == 3:
+                out = out[:, -need:, :1]
+            y_hat = out.squeeze(0).squeeze(-1).detach().cpu().numpy().astype(np.float32)
+
+        if y_hat.shape[0] < h:
+            raise RuntimeError(f"TimeXerModel returned {y_hat.shape[0]} steps, expected >= {h}.")
+        return y_hat[:h]
+
+
 @dataclass
 class ProphetModel(ForecastModel):
     alias: str = "Prophet"
@@ -1094,17 +1289,21 @@ class ProphetModel(ForecastModel):
         else :
             raise ValueError("Prophet model requires time array (timestamps) for fitting")
         
-        # Set seasonality based on season_length
+        # Set seasonality based on season_length / history length.
+        # Short lookbacks (e.g. L=96) must not enable yearly seasonality.
         yearly_seasonality = self.yearly_seasonality
         weekly_seasonality = self.weekly_seasonality
         daily_seasonality = self.daily_seasonality
-        
+        n_obs = int(len(y))
         if season_length and season_length > 1:
-            # Adjust seasonality settings based on season_length
-            yearly_seasonality = True
-            weekly_seasonality = True
+            # Lookback windows are short; only enable seasons the history can support.
+            yearly_seasonality = False
+            # Need ~2 weeks of hourly (or 2*season_length) points for weekly.
+            weekly_seasonality = bool(n_obs >= max(2 * int(season_length), 14 * 24))
             daily_seasonality = True
-        
+        elif n_obs < 365 * 2:
+            yearly_seasonality = False
+
         # Create Prophet model with seasonality parameters
         model = Prophet(
             yearly_seasonality=yearly_seasonality,
@@ -1876,16 +2075,24 @@ class SundialModel:
         return pred
     
 def get_default_models() -> List[ForecastModel]:
+    """Paper Table 1 candidate pool (AlphaCast baselines), excluding AlphaCast itself.
+
+    Statistical: SeasonalNaive, HistoricAverage, AutoARIMA, Prophet, AutoCES,
+    CrostonClassic, DynamicOptimizedTheta (paper: Optimizers).
+    Deep learning: Autoformer, DLinear, PatchTST, TimesNet, iTransformer
+    (paper: Transformer), TimeXer — only when local checkpoints exist.
+    Foundation: Sundial, Chronos — only when local weights exist.
+
+    Not in Table 1 (kept as classes only): HoltWinters, Theta, ZeroModel, TimesFM.
+    Numeric gaps vs paper are expected without author DL checkpoints / GPT-5.
+    """
     models: List[ForecastModel] = [
         SeasonalNaiveModel(),
         HistoricAverageModel(),
         ArimaModel(),
-        HoltWintersModel(),
-        ThetaModel(),
         CesModel(),
         CrostonModel(),
         DynamicOptimizedThetaModel(),
-        ZeroModel(),
     ]
     try:
         import cmdstanpy
@@ -1903,6 +2110,7 @@ def get_default_models() -> List[ForecastModel]:
         PatchTSTModel,
         TimesNetModel,
         iTransformerModel,
+        TimeXerModel,
     ):
         checkpoint = _resolve_checkpoint(cls.alias)
         if checkpoint and os.path.exists(checkpoint):
@@ -1921,16 +2129,11 @@ def get_default_models() -> List[ForecastModel]:
             else:
                 print(
                     "[warn] Skipping Sundial: incompatible with transformers "
-                    f"{transformers.__version__} (need <5). "
-                    "To enable the Sundial baseline, use "
-                    "scripts/run_with_sundial_env.sh (side env; see scripts/setup_sundial_env.sh)."
+                    f"{transformers.__version__} (need 4.40.x / major <5). "
+                    "Use the project .venv (bash scripts/setup_env.sh)."
                 )
         except Exception:
             models.append(SundialModel())
-
-    timesfm_dir = "./castmind/foundation_models/timesfm"
-    if os.path.isdir(timesfm_dir):
-        models.append(TimesFMModel())
 
     chronos_dir = "./castmind/foundation_models/chronos-bolt-base"
     if os.path.isdir(chronos_dir):

@@ -24,6 +24,7 @@ from castmind.DeepLearningModels.DLinear import Model as DLinear
 from castmind.DeepLearningModels.PatchTST import Model as PatchTST
 from castmind.DeepLearningModels.TimesNet import Model as TimesNet
 from castmind.DeepLearningModels.iTransformer import Model as iTransformer
+from castmind.DeepLearningModels.TimeXer import Model as TimeXer
 from castmind.utils.timefeatures import time_features
 
 CKPT_ROOT = ROOT / "castmind" / "DeepLearningCheckpoints"
@@ -34,6 +35,7 @@ MODELS = {
     "PatchTST": PatchTST,
     "iTransformer": iTransformer,
     "Autoformer": Autoformer,
+    "TimeXer": TimeXer,
 }
 
 
@@ -67,12 +69,12 @@ class WindowDataset(Dataset):
         )
 
 
-def make_args(model_name: str, seq_len: int, pred_len: int) -> SimpleNamespace:
+def make_args(model_name: str, seq_len: int, pred_len: int, preset: str = "light") -> SimpleNamespace:
     args = SimpleNamespace()
     args.task_name = "long_term_forecast"
     args.is_training = 1
     args.model = model_name
-    args.freq = "h"
+    args.freq = "t"
     args.seq_len = seq_len
     args.label_len = min(48, seq_len)
     args.pred_len = pred_len
@@ -93,7 +95,7 @@ def make_args(model_name: str, seq_len: int, pred_len: int) -> SimpleNamespace:
     # Keep widths in sync with castmind.models.base.dl_backbone_hparams
     from castmind.models.base import dl_backbone_hparams
 
-    bb = dl_backbone_hparams(model_name)
+    bb = dl_backbone_hparams(model_name, preset=preset)
     args.d_model = bb["d_model"]
     args.d_ff = bb["d_ff"]
     args.e_layers = bb["e_layers"]
@@ -101,6 +103,11 @@ def make_args(model_name: str, seq_len: int, pred_len: int) -> SimpleNamespace:
     args.d_layers = bb["d_layers"]
     if model_name == "PatchTST":
         args.patch_len = 16
+    if model_name == "TimeXer":
+        args.patch_len = 16
+        args.use_norm = 1
+        # Univariate TimeXer uses the M forward path (forecast_multi).
+        args.features = "M"
     return args
 
 
@@ -114,7 +121,7 @@ def load_series(csv_path: Path) -> Tuple[np.ndarray, np.ndarray]:
     y = y[mask]
     mean, std = float(np.mean(y)), float(np.std(y) + 1e-6)
     y = (y - mean) / std
-    stamp = time_features(pd.to_datetime(df["date"].values), freq="h").transpose(1, 0)
+    stamp = time_features(pd.to_datetime(df["date"].values), freq="t").transpose(1, 0)
     return y, stamp
 
 
@@ -142,15 +149,23 @@ def train_one(model_cls, args, loader: DataLoader, device: torch.device, epochs:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--models", nargs="+", default=["DLinear", "TimesNet", "PatchTST", "iTransformer", "Autoformer"])
-    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--models", nargs="+", default=["DLinear", "TimesNet", "PatchTST", "iTransformer", "Autoformer", "TimeXer"])
+    parser.add_argument("--epochs", type=int, default=None, help="Default: 3 for light, 10 for official")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--datasets", nargs="+", default=None, help="Subset of dataset names")
+    parser.add_argument(
+        "--preset",
+        choices=["light", "official"],
+        default="light",
+        help="light=smoke widths; official=TSLib-like widths to <dataset>_official/",
+    )
     parser.add_argument("--force", action="store_true", help="Overwrite existing checkpoints")
     args_cli = parser.parse_args()
+    preset = args_cli.preset
+    epochs = args_cli.epochs if args_cli.epochs is not None else (10 if preset == "official" else 3)
 
     device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
-    print(f"[info] training on {device}")
+    print(f"[info] training on {device} preset={preset} epochs={epochs}")
 
     datasets: Dict[str, Tuple[Path, int, int]] = {
         "ETTh1": (ROOT / "data/ETTh1/train.csv", 96, 96),
@@ -173,10 +188,10 @@ def main() -> None:
         if not csv_path.exists():
             print(f"[skip] missing {csv_path}")
             continue
-        print(f"\n=== {ds_name} seq={seq_len} pred={pred_len} ===")
+        print(f"\n=== {ds_name} seq={seq_len} pred={pred_len} preset={preset} ===")
         y, stamps = load_series(csv_path)
         label_len = min(48, seq_len)
-        out_dir = ckpt_root / ds_name
+        out_dir = ckpt_root / (f"{ds_name}_official" if preset == "official" else ds_name)
         out_dir.mkdir(parents=True, exist_ok=True)
         for model_name in args_cli.models:
             if model_name not in MODELS:
@@ -192,10 +207,10 @@ def main() -> None:
                 continue
             print(f"  training {model_name} windows={len(dataset)} stride={stride} -> {ckpt_path}")
             loader = DataLoader(dataset, batch_size=args_cli.batch_size, shuffle=True, drop_last=False)
-            model_args = make_args(model_name, seq_len, pred_len)
+            model_args = make_args(model_name, seq_len, pred_len, preset=preset)
             train_device = torch.device("cpu") if model_name == "Autoformer" else device
             try:
-                model = train_one(MODELS[model_name], model_args, loader, train_device, args_cli.epochs)
+                model = train_one(MODELS[model_name], model_args, loader, train_device, epochs)
                 torch.save(model.state_dict(), ckpt_path)
             except Exception as exc:
                 print(f"  [warn] {model_name} failed: {exc}")

@@ -1,5 +1,9 @@
 output_dir: outputs
 use_features: True
+# Investigator F_selected (paper Eq. 6 approx): off | rules | paper
+feature_selection: paper
+# Reflector → Investigator feature re-select attempts per window
+feature_reselect_max: 3
 use_exogenous: True
 
 datasets:
@@ -9,7 +13,8 @@ datasets:
     test_csv: data/EPF_NP/test.csv
     look_back: 168
     predicted_window: 24
-    sliding_window: 168
+    # Day-ahead stride = horizon (N-BEATSx-style); NOT 168 (that under-samples vs long-term stride=H).
+    sliding_window: 24
     frequency: h
     checkpoints:
       Autoformer: castmind/DeepLearningCheckpoints/EPF_NP/Autoformer.pth
@@ -25,7 +30,7 @@ datasets:
     test_csv: data/EPF_PJM/test.csv
     look_back: 168
     predicted_window: 24
-    sliding_window: 168
+    sliding_window: 24
     frequency: h
     checkpoints:
       Autoformer: castmind/DeepLearningCheckpoints/EPF_PJM/Autoformer.pth
@@ -41,7 +46,7 @@ datasets:
     test_csv: data/EPF_BE/test.csv
     look_back: 168
     predicted_window: 24
-    sliding_window: 168
+    sliding_window: 24
     frequency: h
     checkpoints:
       Autoformer: castmind/DeepLearningCheckpoints/EPF_BE/Autoformer.pth
@@ -57,7 +62,7 @@ datasets:
     test_csv: data/EPF_FR/test.csv
     look_back: 168
     predicted_window: 24
-    sliding_window: 168
+    sliding_window: 24
     frequency: h
     checkpoints:
       Autoformer: castmind/DeepLearningCheckpoints/EPF_FR/Autoformer.pth
@@ -73,7 +78,7 @@ datasets:
     test_csv: data/EPF_DE/test.csv
     look_back: 168
     predicted_window: 24
-    sliding_window: 168
+    sliding_window: 24
     frequency: h
     checkpoints:
       Autoformer: castmind/DeepLearningCheckpoints/EPF_DE/Autoformer.pth
@@ -91,6 +96,7 @@ datasets:
     predicted_window: 96
     sliding_window: 96
     frequency: h
+    # TSLib / AlphaCast-guide self-trained weights (freq=t widths).
     checkpoints:
       Autoformer: castmind/DeepLearningCheckpoints/ETTh1/Autoformer.pth
       DLinear: castmind/DeepLearningCheckpoints/ETTh1/DLinear.pth

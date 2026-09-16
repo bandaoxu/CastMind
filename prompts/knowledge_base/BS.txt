@@ -1,0 +1,6 @@
+# Empirical knowledge for BS
+
+Derived notes for Knowledge Base (K); situational text remains in contextual_briefings/BS.txt as E.
+
+## Dataset Briefing Placeholder
+# Add BS contextual notes here.

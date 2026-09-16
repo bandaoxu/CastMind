@@ -5,7 +5,6 @@ __pycache__/
 
 # Virtual environments
 .venv/
-.venv-sundial/
 venv/
 ENV/
 env/
@@ -55,6 +54,13 @@ Thumbs.db
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Upstream probe checkout (local only)
+.upstream/
+
+# Superseded local PPT generator (use docs/ + scripts/build_group_talk_*.py)
+ppt/
+.ppt-build/
 
 # Project-specific: experiment outputs
 outputs/

@@ -1,0 +1,9 @@
+# Empirical knowledge for sunny_power
+
+Derived notes for Knowledge Base (K); situational text remains in contextual_briefings/sunny_power.txt as E.
+
+## Sunny Power Dataset Briefing
+
+15-minute solar generation with meteorological drivers:
+direct radiation, 80 m wind, 2 m temperature, humidity, and precipitation.
+Generation follows the solar cycle; clouds and precipitation suppress midday peaks.

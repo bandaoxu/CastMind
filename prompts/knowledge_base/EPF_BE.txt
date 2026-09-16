@@ -1,0 +1,9 @@
+# Empirical knowledge for EPF_BE
+
+Derived notes for Knowledge Base (K); situational text remains in contextual_briefings/EPF_BE.txt as E.
+
+## EPF_BE Dataset Briefing
+
+Belgium day-ahead electricity prices (hourly). The target is Price.
+Exogenous drivers are the generation forecast and the system load forecast.
+The series is highly volatile; generation-load imbalance often precedes price spikes.

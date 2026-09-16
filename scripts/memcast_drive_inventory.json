@@ -1,0 +1,47 @@
+{
+  "source": "https://drive.google.com/file/d/1HOCE20FQgLl0xCv_dOmLcTbN1RCZWwqd/view?usp=drive_link",
+  "claimed_in_readme": [
+    "NP", "PJM", "BE", "FR", "DE",
+    "ETTh1", "ETTm1",
+    "Windy Power", "Sunny Power",
+    "MOPEX"
+  ],
+  "downloaded_at": "2026-09-07",
+  "zip_bytes": 85073728,
+  "actual_files": [
+    "Covid-19.csv",
+    "CzeLan.csv",
+    "electricity.csv",
+    "ETTh1.csv",
+    "ETTh2.csv",
+    "ETTm1.csv",
+    "ETTm2.csv",
+    "exchange_rate.csv",
+    "FRED-MD.csv",
+    "illness.csv",
+    "METR-LA.csv",
+    "NYSE.csv",
+    "PEMS04.csv",
+    "PEMS08.csv",
+    "PEMS-BAY.csv",
+    "weather.csv",
+    "Wike2000.csv",
+    "Wind.csv"
+  ],
+  "verdict": "README claims Windy/Sunny/MOPEX + EPF, but the zip is a generic public-TS dump. Missing Windy Power, Sunny Power, MOPEX, and all EPF markets. Wind.csv is a different schema (pred_* / target), not AlphaCast Windy Power.",
+  "wind_csv_columns": [
+    "date",
+    "pred_humidity",
+    "pred_pressure",
+    "pred_temp",
+    "pred_w_dir",
+    "pred_w_speed",
+    "target",
+    "ture_w_speed"
+  ],
+  "next_steps": [
+    "Ask AlphaCast/MemCast authors for the processed WP/SP/MOPEX CSVs used in Table 1.",
+    "Or obtain iFLYTEK contest CSVs (login required) and run scripts/import_aligned_dataset.py.",
+    "Keep local Open-Meteo/USGS proxies only for pipeline smoke tests."
+  ]
+}

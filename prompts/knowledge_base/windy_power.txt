@@ -1,0 +1,9 @@
+# Empirical knowledge for windy_power
+
+Derived notes for Knowledge Base (K); situational text remains in contextual_briefings/windy_power.txt as E.
+
+## Windy Power Dataset Briefing
+
+15-minute wind farm generation with meteorological drivers:
+direct radiation, 80 m wind speed/direction, 2 m temperature, 2 m humidity, and precipitation.
+Power is dominated by 80 m wind speed; cut-in/cut-out behavior makes the series nonlinear and noisy.

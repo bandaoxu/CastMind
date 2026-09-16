@@ -30,6 +30,10 @@ class ExperimentConfig:
     # New optional fields
     use_features: bool = True
     feature_selection_override: Optional[Dict] = None
+    # Investigator F_selected: off | rules | paper (LLM + rules fallback)
+    feature_selection: str = "paper"
+    # Max Reflector→Investigator feature re-selects per window (paper loop)
+    feature_reselect_max: int = 3
     # Exogenous variable processing switch
     use_exogenous: bool = False
     sel_model: Optional[str] = None
@@ -52,6 +56,14 @@ def load_config(path: str) -> ExperimentConfig:
     # New fields with defaults
     use_features = bool(raw.get("use_features", True))
     feature_selection_override = raw.get("feature_selection_override")
+    feature_selection = str(raw.get("feature_selection", "paper") or "paper").strip().lower()
+    if feature_selection not in ("off", "rules", "paper"):
+        feature_selection = "paper"
+    try:
+        feature_reselect_max = int(raw.get("feature_reselect_max", 3))
+    except Exception:
+        feature_reselect_max = 3
+    feature_reselect_max = max(0, feature_reselect_max)
     use_exogenous = bool(raw.get("use_exogenous", False))
     sel_model_raw = raw.get("SEL_MODEL")
     sel_model = None
@@ -77,6 +89,8 @@ def load_config(path: str) -> ExperimentConfig:
         output_dir=output_dir,
         use_features=use_features,
         feature_selection_override=feature_selection_override,
+        feature_selection=feature_selection,
+        feature_reselect_max=feature_reselect_max,
         use_exogenous=use_exogenous,
         sel_model=sel_model,
     )

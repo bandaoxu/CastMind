@@ -15,6 +15,7 @@ from .common import (
 )
 from .generator_agent import create_generator_agent
 from .investigator_agent import create_investigator_agent
+from .knowledge import build_context_lookup, build_knowledge_lookup
 from .reflector_agent import create_reflector_agent
 
 
@@ -60,6 +61,7 @@ def clear_resume_state(ds_out_dir: str) -> None:
 def build_agent_or_none(
     cfg: ExperimentConfig | None = None,
     dataset_briefings: Optional[Dict[str, str]] = None,
+    knowledge_lookup: Optional[Dict[str, str]] = None,
 ):
     load_dotenv(override=False)
 
@@ -77,18 +79,25 @@ def build_agent_or_none(
         return None
 
     try:
-        briefing_lookup: Dict[str, str] = dataset_briefings or {}
         dataset_lookup: Dict[str, DatasetConfig] = {d.name: d for d in cfg.datasets} if cfg else {}
+        briefing_lookup: Dict[str, str] = dataset_briefings or {}
+        if cfg and not briefing_lookup:
+            briefing_lookup = build_context_lookup(cfg.datasets)
+        kb_lookup: Dict[str, str] = knowledge_lookup or {}
+        if cfg and not kb_lookup:
+            kb_lookup = build_knowledge_lookup([d.name for d in cfg.datasets])
 
-        # Build Investigator and Reflector agents (used internally by the generator toolchain)
-        _ = create_investigator_agent(
+        investigator_agent = create_investigator_agent(
+            model_name,
             cfg,
             dataset_lookup,
             briefing_lookup,
+            kb_lookup,
             prepare_investor_packet,
             json_default,
         )
         reflector_agent = create_reflector_agent(
+            model_name,
             assess_forecast,
             json_default,
         )
@@ -97,15 +106,22 @@ def build_agent_or_none(
             cfg,
             dataset_lookup,
             briefing_lookup,
+            kb_lookup,
             prepare_investor_packet,
             json_default,
             reflector_agent,
             deterministic_run_for_dataset,
+            investigator_agent=investigator_agent,
         )
         if model_name.startswith("openai:") and openai_base_url:
             print(f"[info] Using OpenAI base URL: {openai_base_url}")
+        print(
+            f"[info] Agents: Investigator/Reflector/Generator on {model_name}; "
+            f"feature_selection={getattr(cfg, 'feature_selection', None)}"
+        )
         return generator_agent
-    except Exception:
+    except Exception as exc:
+        print(f"[warn] Failed to build LLM agents: {exc}")
         return None
 
 

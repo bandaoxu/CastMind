@@ -17,6 +17,7 @@ from castmind.features.extract_exogenous import (
     EXOGENOUS_DESCRIPTIONS,
     _find_station_columns,
 )
+from castmind.features.select import select_features_for_mode
 from castmind.tools.analysis import (
     analyze_training,
     choose_cluster_by_similarity,
@@ -55,8 +56,20 @@ def prepare_investor_packet(
     briefing_lookup: dict[str, str],
     window_offset: int = 0,
     forecast_horizon: Optional[int] = None,
+    reflective_feedback: Optional[str] = None,
+    knowledge_lookup: Optional[dict[str, str]] = None,
+    include_case_evidence: bool = True,
+    preselected_features: Optional[List[str]] = None,
+    preselected_weights: Optional[Dict[str, float]] = None,
 ) -> dict:
-    """Generate the InvestigatorAgent research packet for a dataset window."""
+    """Build research evidence for a dataset window.
+
+    Investigator scope (``include_case_evidence=False``): look-back features,
+    ``F_selected``, knowledge ``K``, context ``E``, exogenous summaries.
+
+    Generator scope (``include_case_evidence=True``, paper §3.4.1): also retrieve
+    cluster auxiliary forecast and neighbor trajectories.
+    """
 
     dataset_name = ds_cfg.name
     ds_out_dir = os.path.join(cfg.output_dir, dataset_name) if cfg else os.path.join("outputs", dataset_name)
@@ -126,115 +139,127 @@ def prepare_investor_packet(
     configured_model = None
     season_length = int(memory.get("periodicity_lag", 1)) if isinstance(memory, dict) else 1
 
-    config_sel_model = getattr(cfg, "sel_model", None) if cfg else None
-    if config_sel_model:
+    # Paper feature set is computed on the current look-back window (not the full train series).
+    if getattr(cfg, "use_features", True) if cfg is not None else True:
         try:
-            configured_model = config_sel_model
-            pred = forecast_with_model(
-                config_sel_model,
+            features = extract_target_features(
                 np.asarray(window_vals, dtype=float),
-                int(ref_horizon),
-                season_length=season_length,
-                dataset=ds_cfg,
-                timestamps=window_ts,
+                memory.get("frequency") if isinstance(memory, dict) else None,
             )
-            reference_prediction = pred.tolist()
         except Exception:
             pass
 
-    if reference_prediction is None and cluster_base_raw:
-        try:
-            clusters = [
-                ClusterEntry(
-                    window=c.get("window", []),
-                    best_model=c.get("best_model", {}),
-                    total_weight=c.get("total_weight", 1),
-                )
-                for c in cluster_base_raw
-                if isinstance(c, dict)
-            ]
-            clusters = [c for c in clusters if c.window and c.best_model]
-            if clusters:
-                best_cluster = choose_cluster_by_similarity(clusters, np.asarray(window_vals, dtype=float))
-                best_model, total_weight = best_cluster.best_model, best_cluster.total_weight
-                for model_name in best_model:
-                    weight = 1.0 * best_model[model_name] / total_weight
-                    model_pred = forecast_with_model(
-                        model_name,
-                        np.asarray(window_vals, dtype=float),
-                        int(ref_horizon),
-                        season_length=season_length,
-                        dataset=ds_cfg,
-                        timestamps=window_ts,
-                    ).tolist()
-                    if reference_prediction is None:
-                        reference_prediction = [0.0] * ref_horizon
-                    for i in range(ref_horizon):
-                        reference_prediction[i] = reference_prediction[i] + weight * model_pred[i]
-                if reference_prediction is not None:
-                    recommended_model = "cluster-weighted"
-        except Exception:
-            pass
-
-    if not reference_prediction:
-        if case_base_raw:
+    # --- Case library evidence (Generator-owned per paper §3.4.1) ---
+    if include_case_evidence:
+        config_sel_model = getattr(cfg, "sel_model", None) if cfg else None
+        if config_sel_model:
             try:
-                cases = [
-                    CaseEntry(window=c.get("window", []), best_model=c.get("best_model"))
-                    for c in case_base_raw
-                    if isinstance(c, dict)
-                ]
-                cases = [c for c in cases if c.window and c.best_model]
-                if cases:
-                    best_case = choose_model_by_similarity(cases, np.asarray(window_vals, dtype=float))
-                    if best_case:
-                        recommended_model = best_case.best_model
-            except Exception:
-                pass
-
-        primary_model = recommended_model or (memory.get("best_model") if isinstance(memory, dict) else None)
-        fallback_models = []
-        if isinstance(memory, dict):
-            fallback_models = memory.get("model_rankings") or []
-        candidate_models = []
-        if primary_model:
-            candidate_models.append(primary_model)
-        for model in fallback_models:
-            if isinstance(model, str) and model not in candidate_models:
-                candidate_models.append(model)
-        if not candidate_models:
-            candidate_models = [
-                "auto_arima",
-                "theta",
-                "ets",
-                "sarimax",
-                "lgbm",
-                "prophet",
-            ]
-        best_model = None
-        primary_exc: Exception | None = None
-        for model in candidate_models:
-            try:
+                configured_model = config_sel_model
                 pred = forecast_with_model(
-                    model,
+                    config_sel_model,
                     np.asarray(window_vals, dtype=float),
                     int(ref_horizon),
                     season_length=season_length,
                     dataset=ds_cfg,
                     timestamps=window_ts,
                 )
-                best_model = model
                 reference_prediction = pred.tolist()
-                break
-            except Exception as exc:
-                primary_exc = exc
-                continue
-        if reference_prediction is None and primary_exc is not None:
-            raise primary_exc
+            except Exception:
+                pass
+
+        if reference_prediction is None and cluster_base_raw:
+            try:
+                clusters = [
+                    ClusterEntry(
+                        window=c.get("window", []),
+                        best_model=c.get("best_model", {}),
+                        total_weight=c.get("total_weight", 1),
+                    )
+                    for c in cluster_base_raw
+                    if isinstance(c, dict)
+                ]
+                clusters = [c for c in clusters if c.window and c.best_model]
+                if clusters:
+                    best_cluster = choose_cluster_by_similarity(clusters, np.asarray(window_vals, dtype=float))
+                    best_model, total_weight = best_cluster.best_model, best_cluster.total_weight
+                    tw = float(total_weight) if total_weight else 0.0
+                    if tw <= 0 and isinstance(best_model, dict):
+                        tw = float(sum(best_model.values())) or 1.0
+                    for model_name in best_model:
+                        weight = 1.0 * best_model[model_name] / tw
+                        model_pred = forecast_with_model(
+                            model_name,
+                            np.asarray(window_vals, dtype=float),
+                            int(ref_horizon),
+                            season_length=season_length,
+                            dataset=ds_cfg,
+                            timestamps=window_ts,
+                        ).tolist()
+                        if reference_prediction is None:
+                            reference_prediction = [0.0] * ref_horizon
+                        for i in range(ref_horizon):
+                            reference_prediction[i] = reference_prediction[i] + weight * model_pred[i]
+                    if reference_prediction is not None:
+                        recommended_model = "cluster-weighted"
+            except Exception:
+                pass
+
+        if not reference_prediction:
+            if case_base_raw:
+                try:
+                    cases = [
+                        CaseEntry(window=c.get("window", []), best_model=c.get("best_model"))
+                        for c in case_base_raw
+                        if isinstance(c, dict)
+                    ]
+                    cases = [c for c in cases if c.window and c.best_model]
+                    if cases:
+                        recommended_model = choose_model_by_similarity(
+                            cases, np.asarray(window_vals, dtype=float)
+                        )
+                except Exception:
+                    pass
+
+            primary_model = recommended_model or (memory.get("best_model") if isinstance(memory, dict) else None)
+            fallback_models = []
+            if isinstance(memory, dict):
+                fallback_models = memory.get("model_rankings") or []
+            candidate_models = []
+            if primary_model:
+                candidate_models.append(primary_model)
+            for model in fallback_models:
+                if isinstance(model, str) and model not in candidate_models:
+                    candidate_models.append(model)
+            if not candidate_models:
+                candidate_models = [
+                    "SeasonalNaive",
+                    "AutoARIMA",
+                    "DLinear",
+                ]
+            best_model = None
+            primary_exc: Exception | None = None
+            for model in candidate_models:
+                try:
+                    pred = forecast_with_model(
+                        model,
+                        np.asarray(window_vals, dtype=float),
+                        int(ref_horizon),
+                        season_length=season_length,
+                        dataset=ds_cfg,
+                        timestamps=window_ts,
+                    )
+                    best_model = model
+                    reference_prediction = pred.tolist()
+                    break
+                except Exception as exc:
+                    primary_exc = exc
+                    continue
+            if reference_prediction is None and primary_exc is not None and include_case_evidence:
+                raise primary_exc
 
     neighbor_lookback = None
     neighbor_pred = None
-    if case_neighbor_raw:
+    if include_case_evidence and case_neighbor_raw:
         try:
             cases_neighbor = [
                 CaseNeighbor(look_back_window=c.get("look_back_window", []), pred_window=c.get("pred_window", []))
@@ -416,18 +441,117 @@ def prepare_investor_packet(
                 exogenous_column_details,
             )
 
-    basemodel_result = {
-        "step_index": len(basemodel_results) + 1,
-        "best_model": best_model,
-        "recommended_model": recommended_model,
-        "configured_model": configured_model,
-        "reference_prediction": reference_prediction,
-    }
-    basemodel_results.append(basemodel_result)
+    if include_case_evidence:
+        basemodel_result = {
+            "step_index": len(basemodel_results) + 1,
+            "best_model": best_model,
+            "recommended_model": recommended_model,
+            "configured_model": configured_model,
+            "reference_prediction": reference_prediction,
+        }
+        basemodel_results.append(basemodel_result)
 
-    os.makedirs(ds_out_dir, exist_ok=True)
-    with open(os.path.join(ds_out_dir, "basemodel_results.json"), "w", encoding="utf-8") as f:
-        json.dump(basemodel_results, f, indent=2)
+        os.makedirs(ds_out_dir, exist_ok=True)
+        with open(os.path.join(ds_out_dir, "basemodel_results.json"), "w", encoding="utf-8") as f:
+            json.dump(basemodel_results, f, indent=2)
+    else:
+        os.makedirs(ds_out_dir, exist_ok=True)
+
+    selected_features: List[str] = []
+    feature_weights: Dict[str, float] = {}
+    selection_rationale = "feature_selection=off"
+    selection_method = "off"
+    mode = getattr(cfg, "feature_selection", "paper") if cfg is not None else "paper"
+    if getattr(cfg, "use_features", True) if cfg is not None else True:
+        # Prefer Investigator-provided F_selected when merging Generator case evidence.
+        if isinstance(preselected_features, list) and preselected_features:
+            available = set(str(k) for k in (features or {}).keys())
+            selected_features = [str(n) for n in preselected_features if str(n) in available]
+            if isinstance(preselected_weights, dict) and selected_features:
+                feature_weights = {}
+                for k, v in preselected_weights.items():
+                    if str(k) in selected_features:
+                        try:
+                            feature_weights[str(k)] = float(v)
+                        except Exception:
+                            continue
+                if len(feature_weights) != len(selected_features) or sum(feature_weights.values()) <= 0:
+                    w = 1.0 / len(selected_features)
+                    feature_weights = {n: w for n in selected_features}
+                else:
+                    tot = float(sum(feature_weights.values())) or 1.0
+                    feature_weights = {k: float(v) / tot for k, v in feature_weights.items()}
+            selection_rationale = "investigator_preselected"
+            selection_method = "investigator"
+        else:
+            # Optional hard override from config (deterministic experiments).
+            sel_override = getattr(cfg, "feature_selection_override", None) if cfg is not None else None
+            if isinstance(sel_override, dict) and sel_override.get("selected_features"):
+                available = set(str(k) for k in (features or {}).keys())
+                selected_features = [
+                    str(n) for n in sel_override.get("selected_features", []) if str(n) in available
+                ]
+                raw_w = sel_override.get("feature_weights") or {}
+                if isinstance(raw_w, dict) and selected_features:
+                    feature_weights = {}
+                    for k, v in raw_w.items():
+                        if k in selected_features:
+                            try:
+                                feature_weights[k] = float(v)
+                            except Exception:
+                                continue
+                    if len(feature_weights) != len(selected_features) or sum(feature_weights.values()) <= 0:
+                        w = 1.0 / len(selected_features)
+                        feature_weights = {n: w for n in selected_features}
+                    else:
+                        tot = float(sum(feature_weights.values())) or 1.0
+                        feature_weights = {k: float(v) / tot for k, v in feature_weights.items()}
+                selection_rationale = "feature_selection_override"
+                selection_method = "override"
+            elif mode and str(mode).lower() != "off" and isinstance(features, dict) and features:
+                context_text = briefing_lookup.get(dataset_name, "") if briefing_lookup else ""
+                knowledge_text = (knowledge_lookup or {}).get(dataset_name, "") if knowledge_lookup else ""
+                briefing = "\n\n".join(p for p in (knowledge_text, context_text) if p)
+                selected_features, feature_weights, selection_rationale, selection_method = select_features_for_mode(
+                    str(mode),
+                    features,
+                    dataset_name=dataset_name,
+                    briefing=briefing,
+                    reflective_feedback=reflective_feedback,
+                )
+
+    if selected_features:
+        try:
+            with open(os.path.join(ds_out_dir, "selected_features.json"), "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "selected_features": selected_features,
+                        "feature_weights": feature_weights,
+                        "selection_rationale": selection_rationale,
+                        "selection_method": selection_method,
+                        "window_offset": offset,
+                        "reflective_feedback": reflective_feedback,
+                    },
+                    f,
+                    indent=2,
+                    ensure_ascii=False,
+                )
+        except Exception:
+            pass
+
+    # Evidence view for Generator: primary = F_selected values; full F kept separately.
+    features_selected_values = {
+        k: features[k] for k in selected_features if isinstance(features, dict) and k in features
+    }
+
+    context_text = briefing_lookup.get(dataset_name, "") if briefing_lookup else ""
+    knowledge_text = (knowledge_lookup or {}).get(dataset_name, "") if knowledge_lookup else ""
+    dataset_briefing = "\n\n".join(
+        p for p in (
+            f"[Knowledge K]\n{knowledge_text}" if knowledge_text else "",
+            f"[Context E]\n{context_text}" if context_text else "",
+        ) if p
+    )
 
     return {
         "dataset": dataset_name,
@@ -444,6 +568,18 @@ def prepare_investor_packet(
         "frequency": memory.get("frequency") if isinstance(memory, dict) else None,
         "memory": memory,
         "features": features,
+        "features_full": features,
+        "selected_features": selected_features,
+        "feature_weights": feature_weights,
+        "features_selected_values": features_selected_values,
+        "selection_rationale": selection_rationale,
+        "selection_method": selection_method,
+        "feature_selection_mode": str(mode).lower() if mode else "off",
+        "reflective_feedback": reflective_feedback,
+        "knowledge": knowledge_text,
+        "context": context_text,
+        "dataset_briefing": dataset_briefing or context_text,
+        "include_case_evidence": bool(include_case_evidence),
         "exogenous_features": exo_features,
         "exogenous_correlations": exo_corr,
         "exogenous_top3": exo_top3,
@@ -454,7 +590,6 @@ def prepare_investor_packet(
         "forecast_window_timestamps": forecast_window_timestamps,
         "forecast_window_exogenous_values": forecast_window_exogenous_values,
         "forecast_window_coverage": forecast_window_coverage,
-        "dataset_briefing": briefing_lookup.get(dataset_name, ""),
         "case_base_size": len(case_base_raw),
         "case_neighbor_size": len(case_neighbor_raw),
         "best_model_name": best_model,
@@ -463,6 +598,8 @@ def prepare_investor_packet(
         "reference_prediction": reference_prediction,
         "neighbor_lookback": neighbor_lookback,
         "neighbor_pred": neighbor_pred,
+        "X_auxiliary": reference_prediction,
+        "X_neighbor": {"look_back": neighbor_lookback, "pred": neighbor_pred},
     }
 
 
@@ -549,7 +686,8 @@ def deterministic_run_for_dataset(cfg: ExperimentConfig, ds) -> dict:
     sel_cfg = getattr(cfg, "feature_selection_override", None)
     if getattr(cfg, "use_features", True):
         try:
-            feats = extract_target_features(y, memory.get("frequency"))
+            # Align with paper: features describe the look-back window, not the full train series.
+            feats = extract_target_features(current_window, memory.get("frequency"))
             with open(os.path.join(ds_out_dir, "features.json"), "w", encoding="utf-8") as f:
                 json.dump(feats, f, indent=2)
             if isinstance(sel_cfg, dict):

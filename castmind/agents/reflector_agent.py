@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 from textwrap import dedent
 from typing import Any, Callable, Dict, List
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext  # type: ignore
 from pydantic_ai.messages import ModelResponse, TextPart  # type: ignore
 from pydantic_ai.models.function import FunctionModel  # type: ignore
 
@@ -22,7 +23,9 @@ REFLECTOR_AGENT_PROMPT_FALLBACK = dedent(
 )
 
 _NUMBER_PATTERN = re.compile(
-    r"(?P<number>-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?)(?P<percent>%?)"
+    # No thousands-comma form: CoT often uses commas as list separators
+    # ("663,1080,1010"), which falsely become 663108 / 824689.
+    r"(?P<number>-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)(?P<percent>%?)(?!\d)"
 )
 # Only treat explicit horizon/length claims as window checks.
 # Do NOT match "Step 0" / "window_offset=0" (those are indices, not horizons).
@@ -95,6 +98,14 @@ def _collect_numeric_context(
     reference = investor_packet.get("reference_prediction")
     if isinstance(reference, list) and reference:
         context.extend(_summarize_series(reference))
+        # Sample trajectory points so mid-window peaks/plateaus are grounded.
+        clean_ref = [_safe_float(v) for v in reference]
+        clean_ref = [float(v) for v in clean_ref if v is not None]
+        if clean_ref:
+            step = max(1, len(clean_ref) // 16)
+            context.extend(clean_ref[::step])
+            mid = len(clean_ref) // 2
+            context.extend(clean_ref[max(0, mid - 2) : mid + 3])
         diffs: List[float] = []
         for pred_val, ref_val in zip(predictions, reference):
             pred_f = _safe_float(pred_val)
@@ -233,7 +244,8 @@ def _is_supported_numeric_claim(value: float, context_numbers: List[float]) -> b
     if not context_numbers:
         return False
     for ctx in context_numbers:
-        tolerance = max(0.02 * max(abs(value), abs(ctx), 1.0), 0.5)
+        # Slightly looser than before: CoT often rounds packet floats.
+        tolerance = max(0.03 * max(abs(value), abs(ctx), 1.0), 0.75)
         if abs(value - ctx) <= tolerance:
             return True
     return False
@@ -348,12 +360,17 @@ def scan_chain_of_thought(
                 r"\s*[- ]?(?:step|point|h\b|hour)", after
             ):
                 continue
-            reference_type = "mean"
             snippet_lower = snippet.lower()
-            if "last" in snippet_lower or "final" in snippet_lower:
-                reference_type = "last"
+            # Only treat as mean/last contradiction when the CoT explicitly talks about those stats.
+            explicit_mean = bool(re.search(r"\b(?:mean|average|avg|overall)\b", snippet_lower))
+            explicit_last = bool(re.search(r"\b(?:last|final|terminal)\b", snippet_lower))
+            if not explicit_mean and not explicit_last:
+                # Point/peak claims on the trajectory are OK (not mean/last assertions).
+                continue
+            # Explicit mean/last: compare to stats even if the value also appears as a peak.
+            reference_type = "last" if explicit_last and not explicit_mean else "mean"
             target = baseline_stats.get(reference_type, baseline_stats["mean"])
-            tolerance = max(0.05 * max(abs(target), 1.0), 0.5)
+            tolerance = max(0.08 * max(abs(target), 1.0), 1.0)
             if abs(claimed - target) > tolerance:
                 baseline_mismatches.append(
                     {
@@ -386,106 +403,168 @@ def scan_chain_of_thought(
     return analysis
 
 
+def build_deterministic_audit_report(
+    payload: dict[str, Any],
+    assess_forecast: Callable[[List[float], int, Dict[str, Any], str], Dict[str, Any]],
+) -> dict[str, Any]:
+    """Rules audit used by Reflector tool; LLM Reflector decides final approved."""
+    raw_predictions = payload.get("predictions") or []
+    predictions: List[float] = []
+    for value in raw_predictions:
+        try:
+            predictions.append(float(value))
+        except Exception:
+            continue
+    try:
+        predicted_window = int(
+            payload.get("predicted_window", len(predictions)) or len(predictions)
+        )
+    except Exception:
+        predicted_window = len(predictions)
+    investor_packet = payload.get("investor_packet") or {}
+    chain_of_thought = payload.get("chain_of_thought") or ""
+    try:
+        window_offset = int(payload.get("window_offset", 0) or 0)
+    except Exception:
+        window_offset = 0
+    report = assess_forecast(
+        predictions,
+        predicted_window,
+        investor_packet,
+        chain_of_thought,
+    )
+    analysis = scan_chain_of_thought(
+        predictions,
+        predicted_window,
+        investor_packet,
+        chain_of_thought,
+        window_offset,
+    )
+
+    diagnostics: Dict[str, Any] = report.setdefault("diagnostics", {})
+    diagnostics["chain_of_thought"] = analysis
+
+    detected_issues: List[str] = []
+    if analysis["unsupported_numbers"]:
+        samples = ", ".join(
+            item["raw"] for item in analysis["unsupported_numbers"][:3]
+        )
+        detected_issues.append(
+            f"Chain-of-thought numeric claims lack grounding: {samples}"
+        )
+    if analysis["window_claim_mismatches"]:
+        samples = ", ".join(
+            item["raw"] for item in analysis["window_claim_mismatches"][:2]
+        )
+        detected_issues.append(
+            f"Chain-of-thought horizon references contradict request: {samples}"
+        )
+    if analysis["baseline_claim_mismatches"]:
+        samples = ", ".join(
+            item["raw"] for item in analysis["baseline_claim_mismatches"][:2]
+        )
+        detected_issues.append(
+            f"Chain-of-thought baseline stats contradict investor packet: {samples}"
+        )
+
+    if detected_issues:
+        issues = report.setdefault("issues", [])
+        issues.extend(detected_issues)
+        report["approved"] = False
+
+    summary_note = analysis.get("summary")
+    if summary_note:
+        existing_note = report.get("notes")
+        report["notes"] = f"{existing_note}; {summary_note}" if existing_note else summary_note
+
+    if payload.get("window_offset") is not None:
+        report.setdefault("window_offset", window_offset)
+    return report
+
+
 def create_reflector_agent(
+    model_name: str,
     assess_forecast: Callable[[List[float], int, Dict[str, Any], str], Dict[str, Any]],
     json_default: Callable[[Any], Any],
 ) -> Agent:
+    """LLM Reflector with a deterministic audit tool (paper §3.4.2).
+
+    Falls back to rules-only FunctionModel when ``CASTMIND_RULES_REFLECTOR=1``.
+    """
     instructions = get_agent_instructions("ReflectorAgent", REFLECTOR_AGENT_PROMPT_FALLBACK)
+    use_rules_only = (os.getenv("CASTMIND_RULES_REFLECTOR") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
-    def _extract_json_request(messages: list[Any]) -> dict[str, Any]:
-        for message in reversed(messages):
-            parts = getattr(message, "parts", [])
-            for part in reversed(parts):
-                content = getattr(part, "content", None)
-                if isinstance(content, str):
-                    try:
-                        return json.loads(content)
-                    except Exception:
-                        continue
-        return {}
+    def _build_rule_report(payload: dict[str, Any]) -> dict[str, Any]:
+        return build_deterministic_audit_report(payload, assess_forecast)
 
-    def _reflector_model(messages, agent_info) -> ModelResponse:
-        payload = _extract_json_request(messages)
-        raw_predictions = payload.get("predictions") or []
-        predictions: List[float] = []
-        for value in raw_predictions:
-            try:
-                predictions.append(float(value))
-            except Exception:
-                continue
-        try:
-            predicted_window = int(
-                payload.get("predicted_window", len(predictions)) or len(predictions)
+    if use_rules_only:
+        def _extract_json_request(messages: list[Any]) -> dict[str, Any]:
+            for message in reversed(messages):
+                parts = getattr(message, "parts", [])
+                for part in reversed(parts):
+                    content = getattr(part, "content", None)
+                    if isinstance(content, str):
+                        try:
+                            return json.loads(content)
+                        except Exception:
+                            continue
+            return {}
+
+        def _reflector_model(messages, agent_info) -> ModelResponse:
+            payload = _extract_json_request(messages)
+            report = _build_rule_report(payload)
+            return ModelResponse(
+                parts=[TextPart(json.dumps(report, default=json_default))],
+                model_name="function:reflector",
             )
-        except Exception:
-            predicted_window = len(predictions)
-        investor_packet = payload.get("investor_packet") or {}
-        chain_of_thought = payload.get("chain_of_thought") or ""
-        try:
-            window_offset = int(payload.get("window_offset", 0) or 0)
-        except Exception:
-            window_offset = 0
-        report = assess_forecast(
-            predictions,
-            predicted_window,
-            investor_packet,
-            chain_of_thought,
-        )
-        analysis = scan_chain_of_thought(
-            predictions,
-            predicted_window,
-            investor_packet,
-            chain_of_thought,
-            window_offset,
+
+        return Agent(
+            FunctionModel(function=_reflector_model),
+            instructions=instructions,
         )
 
-        diagnostics: Dict[str, Any] = report.setdefault("diagnostics", {})
-        diagnostics["chain_of_thought"] = analysis
+    # True LLM Reflector: tool runs deterministic checks; model decides approved (paper §3.4.2).
+    llm_instructions = instructions + dedent(
+        """
 
-        detected_issues: List[str] = []
-        if analysis["unsupported_numbers"]:
-            samples = ", ".join(
-                item["raw"] for item in analysis["unsupported_numbers"][:3]
-            )
-            detected_issues.append(
-                f"Chain-of-thought numeric claims lack grounding: {samples}"
-            )
-        if analysis["window_claim_mismatches"]:
-            samples = ", ".join(
-                item["raw"] for item in analysis["window_claim_mismatches"][:2]
-            )
-            detected_issues.append(
-                f"Chain-of-thought horizon references contradict request: {samples}"
-            )
-        if analysis["baseline_claim_mismatches"]:
-            samples = ", ".join(
-                item["raw"] for item in analysis["baseline_claim_mismatches"][:2]
-            )
-            detected_issues.append(
-                f"Chain-of-thought baseline stats contradict investor packet: {samples}"
-            )
-
-        if detected_issues:
-            issues = report.setdefault("issues", [])
-            issues.extend(detected_issues)
-            report["approved"] = False
-
-        summary_note = analysis.get("summary")
-        if summary_note:
-            existing_note = report.get("notes")
-            report["notes"] = f"{existing_note}; {summary_note}" if existing_note else summary_note
-
-        if payload.get("window_offset") is not None:
-            report.setdefault("window_offset", window_offset)
-        return ModelResponse(
-            parts=[TextPart(json.dumps(report, default=json_default))],
-            model_name="function:reflector",
-        )
-
-    return Agent(
-        FunctionModel(function=_reflector_model),
-        instructions=instructions,
+        Extra rules for this deployment:
+          - Call tool `deterministic_audit` exactly once with the provided JSON fields.
+          - Then output ONLY a JSON object with keys approved (bool), issues (list[str]), notes (str).
+          - Use the tool report as evidence; you decide approved. Do not invent numeric claims
+            that are absent from the tool report / chain-of-thought.
+        """
     )
+    reflector_agent = Agent(model_name, instructions=llm_instructions)
+
+    @reflector_agent.tool
+    def deterministic_audit(
+        ctx: RunContext[None],
+        predictions: List[float],
+        predicted_window: int,
+        investor_packet: dict,
+        chain_of_thought: str = "",
+        window_offset: int = 0,
+    ) -> dict:
+        payload = {
+            "predictions": predictions,
+            "predicted_window": predicted_window,
+            "investor_packet": investor_packet or {},
+            "chain_of_thought": chain_of_thought or "",
+            "window_offset": window_offset,
+        }
+        return _build_rule_report(payload)
+
+    return reflector_agent
 
 
-__all__ = ["create_reflector_agent", "REFLECTOR_AGENT_PROMPT_FALLBACK", "scan_chain_of_thought"]
+__all__ = [
+    "create_reflector_agent",
+    "REFLECTOR_AGENT_PROMPT_FALLBACK",
+    "scan_chain_of_thought",
+    "build_deterministic_audit_report",
+]

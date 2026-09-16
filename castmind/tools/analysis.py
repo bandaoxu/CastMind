@@ -16,7 +16,13 @@ from ..models.base import (
     get_default_models,
 )
 from ..utils.similarity import zscore, top1_most_similar,top1_most_similar_neighbor, top1_most_similar_cluster
-from ..utils.time import AnalysisMemory, CaseEntry, ClusterEntry, CaseNeighbor, estimate_periodicity
+from ..utils.time import (
+    AnalysisMemory,
+    CaseEntry,
+    ClusterEntry,
+    CaseNeighbor,
+    resolve_season_length,
+)
 
 @dataclass
 class AnalyzeResult:
@@ -82,14 +88,17 @@ def analyze_training(
     y = train_df[target_col].to_numpy(dtype=float)
     ts_all = pd.to_datetime(train_df[TIME_COL])
 
+    cfg_freq = getattr(dataset_cfg, "frequency", None) if dataset_cfg is not None else None
+    inferred_freq = pd.infer_freq(train_df[TIME_COL]) if len(train_df) > 1 else None
+    freq = cfg_freq or inferred_freq
     memory: AnalysisMemory = {
         "max": float(np.max(y)) if len(y) else 0.0,
         "min": float(np.min(y)) if len(y) else 0.0,
         "mean": float(np.mean(y)) if len(y) else 0.0,
         "variance": float(np.var(y)) if len(y) else 0.0,
-        "periodicity_lag": int(estimate_periodicity(y)),
+        "periodicity_lag": int(resolve_season_length(y, frequency=freq)),
         "series_length": int(len(y)),
-        "frequency": pd.infer_freq(train_df[TIME_COL]) if len(train_df) > 1 else None,
+        "frequency": freq,
     }
 
     if dataset_cfg is not None:
@@ -175,13 +184,14 @@ def _assign_cluster_models(
                 centers[gi].best_model = {counts.most_common(1)[0][0]: 1}
                 centers[gi].total_weight = 1
     elif method == "weighted":
+        # Paper Eq. (7): cluster-local models weighted by win frequency.
+        # w_i = n_i / sum_j n_j (no count>3 filter; that was an upstream heuristic).
         for gi, cluster_indices in enumerate(cluster_indices_list):
             group_cases = [cases[idx] for idx in cluster_indices]
             if group_cases:
                 counts = Counter(c.best_model for c in group_cases)
-                filtered_counts = {model: count for model, count in counts.items() if count > 3}
-                centers[gi].best_model = filtered_counts
-                centers[gi].total_weight = sum(filtered_counts.values())
+                centers[gi].best_model = dict(counts)
+                centers[gi].total_weight = sum(counts.values())
     return centers
 
 

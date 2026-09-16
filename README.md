@@ -50,6 +50,17 @@ pip install -r requirements.txt
 python run_experiment.py
 ```
 
+### Local reproduction (this fork)
+
+Prefer the project `.venv` (`transformers==4.40.1`) and the copy-paste commands in **[RUNBOOK.md](./RUNBOOK.md)**（含 **§4 十数据集全量跑**）。
+
+```bash
+bash scripts/setup_env.sh
+ORCHESTRATION_MODE=llm bash scripts/run.sh --dataset ETTh1
+```
+
+Paper column **ETTh** = local dataset **`ETTh1`**. Full 10-dataset loop, light checkpoints, and resume notes: see RUNBOOK.
+
 ## 🧪 Experimental Results
 
 CastMind consistently achieves the best performance across most datasets, demonstrating a significant advantage over statistical baselines, recent deep learning models, and foundation models. The following figure presents its experimental results in both short-term and long-term forecasting.

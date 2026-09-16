@@ -19,10 +19,10 @@ GENERATOR_AGENT_PROMPT_FALLBACK = dedent(
     You are GeneratorAgent, a world-class time-series forecasting expert operating in a multi-agent workflow.
     Each forecasting step must follow this sequence:
       1. Call `consult` exactly once to obtain the InvestigatorAgent research packet for the requested dataset/window.
-      2. Examine the packet carefully. Use `reference_prediction` as the baseline, consult neighbor guidance and exogenous trends, and only adjust the baseline when evidence clearly supports a correction.
+      2. Examine the packet carefully. Use `reference_prediction` as the baseline; treat Investigator `selected_features` / `features_selected_values` as primary feature evidence; consult neighbor guidance and exogenous trends; only adjust the baseline when evidence clearly supports a correction.
       3. Record a brief "Reflection" that confirms the prediction length equals `predicted_window`, all pending `emit_predictions` arguments are correct (including window_offset), and the forecast aligns with the baseline guidance and exogenous outlook.
       4. Call `record_chain_of_thought` exactly once with dataset_name, window_offset, and a concise summary referencing the evidence and any adjustments (or the decision to keep the baseline).
-      5. Call `emit_predictions` exactly once with the prediction list and required metadata (training_csv, predicted_window, output_dir, dataset_name, frequency, window_offset, start_timestamp, selected_features, feature_weights, and optional exogenous selections).
+      5. Call `emit_predictions` exactly once with the prediction list and required metadata (training_csv, predicted_window, output_dir, dataset_name, frequency, window_offset, start_timestamp, selected_features, feature_weights, and optional exogenous selections). Echo Investigator F_selected when present.
 
     Use no tools other than `consult`, `record_chain_of_thought`, and `emit_predictions`.
     Always call `record_chain_of_thought` before `emit_predictions`. Avoid writing step indices like "Step 0" in the chain-of-thought.
@@ -35,10 +35,12 @@ def create_generator_agent(
     cfg: ExperimentConfig | None,
     dataset_lookup: Dict[str, DatasetConfig],
     briefing_lookup: Dict[str, str],
-    prepare_investor_packet: Callable[[ExperimentConfig | None, DatasetConfig, Dict[str, str], int, Optional[int]], dict],
+    knowledge_lookup: Dict[str, str],
+    prepare_investor_packet: Callable[..., dict],
     json_default: Callable[[Any], Any],
     reflector_agent: Agent,
     deterministic_run_for_dataset: Callable[[ExperimentConfig, Any], dict],
+    investigator_agent: Optional[Agent] = None,
 ) -> Agent:
     instructions = get_agent_instructions("GeneratorAgent", GENERATOR_AGENT_PROMPT_FALLBACK)
     generator_agent = Agent(model_name, instructions=instructions)
@@ -46,10 +48,25 @@ def create_generator_agent(
 
     investigator_cache: dict[tuple[str, int], dict[str, Any]] = {}
     chain_cache: dict[tuple[str, int], str] = {}
+    # Reflector → Investigator feature re-select state (paper §3.4.2 approx).
+    last_reflective_feedback: dict[tuple[str, int], str] = {}
+    reselect_count: dict[tuple[str, int], int] = {}
+    # investigator_agent is constructed by runtime for API symmetry; consult uses
+    # prepare_investor_packet (no nested Agent.run_sync) to avoid pydantic-ai deadlocks.
+    _ = investigator_agent
 
     def _dataset_out_dir(name: str) -> str:
         base_dir = cfg.output_dir if cfg else "outputs"
         return os.path.join(base_dir, name)
+
+    def _feature_mode() -> str:
+        return str(getattr(cfg, "feature_selection", "paper") or "paper").strip().lower() if cfg else "paper"
+
+    def _reselect_max() -> int:
+        try:
+            return int(getattr(cfg, "feature_reselect_max", 3) or 0) if cfg else 3
+        except Exception:
+            return 3
 
     def _append_chain_log(dataset_name: str, window_offset: int, content: str) -> str:
         ds_out_dir = _dataset_out_dir(dataset_name)
@@ -64,13 +81,40 @@ def create_generator_agent(
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         return path
 
+    def _run_investigator(
+        dataset_name: str,
+        window_offset_int: int,
+        forecast_horizon: Optional[int],
+        feedback: Optional[str],
+    ) -> dict:
+        """Investigator owns F_selected / K / E (no case retrieval).
+
+        Do **not** call ``investigator_agent.run_sync`` from inside Generator tools:
+        nested sync agent runs deadlock under pydantic-ai. Packet assembly + feature
+        selection (including LLM feature select via OpenAI API in ``select_features_llm``)
+        go through ``prepare_investor_packet`` instead — same evidence, no nested Agent.
+        """
+        ds_cfg = dataset_lookup[dataset_name]
+        return prepare_investor_packet(
+            cfg,
+            ds_cfg,
+            briefing_lookup,
+            window_offset_int,
+            forecast_horizon,
+            reflective_feedback=feedback,
+            knowledge_lookup=knowledge_lookup,
+            include_case_evidence=False,
+        )
+
     @generator_agent.tool
     def consult(
         ctx: RunContext[None],
         dataset_name: str,
         window_offset: int = 0,
         forecast_horizon: Optional[int] = None,
+        reflective_feedback: Optional[str] = None,
     ) -> dict:
+        """Merge Investigator evidence with Generator-owned case-library retrieval (§3.4.1)."""
         ds_cfg = dataset_lookup.get(dataset_name)
         if ds_cfg is None:
             raise ValueError(f"Unknown dataset '{dataset_name}'")
@@ -83,14 +127,44 @@ def create_generator_agent(
                 forecast_horizon = int(forecast_horizon)
             except Exception:
                 forecast_horizon = None
+        key = (dataset_name, window_offset_int)
+        feedback = reflective_feedback or last_reflective_feedback.get(key)
+
+        inv_packet = _run_investigator(dataset_name, window_offset_int, forecast_horizon, feedback)
+        # Generator retrieves cluster auxiliary + neighbor (paper places this under Generator).
         packet = prepare_investor_packet(
             cfg,
             ds_cfg,
             briefing_lookup,
             window_offset_int,
             forecast_horizon,
+            reflective_feedback=feedback,
+            knowledge_lookup=knowledge_lookup,
+            include_case_evidence=True,
+            preselected_features=inv_packet.get("selected_features"),
+            preselected_weights=inv_packet.get("feature_weights"),
         )
-        investigator_cache[(dataset_name, window_offset_int)] = packet
+        # Prefer Investigator narrative fields when present.
+        for field in (
+            "selection_rationale",
+            "selection_method",
+            "knowledge",
+            "context",
+            "dataset_briefing",
+            "features_selected_values",
+        ):
+            if inv_packet.get(field) is not None:
+                packet[field] = inv_packet.get(field)
+        packet["investigator_stage"] = "f_selected_k_e"
+        packet["generator_stage"] = "case_library_auxiliary_neighbor"
+
+        investigator_cache[key] = packet
+        if feedback:
+            print(
+                f"[info] Investigator re-select features for '{dataset_name}' "
+                f"offset={window_offset_int}: method={packet.get('selection_method')} "
+                f"selected={packet.get('selected_features')}"
+            )
         return packet
 
     @generator_agent.tool
@@ -154,6 +228,8 @@ def create_generator_agent(
                     briefing_lookup,
                     window_offset_int,
                     H,
+                    knowledge_lookup=knowledge_lookup,
+                    include_case_evidence=True,
                 )
             except Exception:
                 investor_packet = {}
@@ -161,6 +237,28 @@ def create_generator_agent(
             investor_packet = {}
 
         chain_text = chain_cache.get((dataset_name, window_offset_int), "")
+        if not str(chain_text).strip():
+            # Recover CoT from disk if the model emitted predictions without a
+            # successful in-memory record_chain_of_thought cache hit.
+            try:
+                log_path = os.path.join(_dataset_out_dir(dataset_name), "chain_of_thought.log")
+                if os.path.isfile(log_path):
+                    with open(log_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                entry = json.loads(line)
+                            except Exception:
+                                continue
+                            if int(entry.get("window_offset", -1)) == window_offset_int:
+                                content = entry.get("content") or ""
+                                if str(content).strip():
+                                    chain_text = str(content)
+                                    chain_cache[(dataset_name, window_offset_int)] = chain_text
+            except Exception:
+                pass
         reflection_request = {
             "dataset_name": dataset_name,
             "window_offset": window_offset_int,
@@ -170,7 +268,12 @@ def create_generator_agent(
             "chain_of_thought": chain_text,
         }
         # Nested run_sync deadlocks inside a sync tool during an agent run; use async.
-        reflection_result = await reflector_agent.run(json.dumps(reflection_request, default=json_default))
+        reflector_prompt = (
+            "Audit this Generator forecast. Call deterministic_audit once with the fields below, "
+            "then output ONLY JSON {approved, issues, notes}.\n\n"
+            + json.dumps(reflection_request, default=json_default)
+        )
+        reflection_result = await reflector_agent.run(reflector_prompt)
         try:
             raw_out = reflection_result.output
             if isinstance(raw_out, dict):
@@ -182,13 +285,59 @@ def create_generator_agent(
                     if text.startswith("json"):
                         text = text[4:].strip()
                 reflection = json.loads(text)
-        except Exception as exc:
-            raise RuntimeError(f"ReflectorAgent returned invalid payload: {exc}") from exc
+        except Exception:
+            # Parse failure only: fall back to deterministic audit (not an approval override).
+            from castmind.agents.common import assess_forecast as _assess
+            from castmind.agents.reflector_agent import build_deterministic_audit_report
+
+            reflection = build_deterministic_audit_report(reflection_request, _assess)
+            reflection.setdefault("notes", (reflection.get("notes") or "") + "; fallback_parse_rules_audit")
         if not reflection.get("approved", False):
             issues = reflection.get("issues") or []
             notes = reflection.get("notes") or ""
             joined = ", ".join(str(item) for item in issues)
-            raise RuntimeError(f"ReflectorAgent rejected forecast: {joined} {notes}")
+            feedback = f"{joined} {notes}".strip()
+            key = (dataset_name, window_offset_int)
+            mode = _feature_mode()
+            used = int(reselect_count.get(key, 0))
+            max_rs = _reselect_max()
+            if mode in ("paper", "rules") and used < max_rs:
+                reselect_count[key] = used + 1
+                last_reflective_feedback[key] = feedback
+                investigator_cache.pop(key, None)
+                try:
+                    with open(
+                        os.path.join(_dataset_out_dir(dataset_name), "feature_reselect.jsonl"),
+                        "a",
+                        encoding="utf-8",
+                    ) as f:
+                        f.write(
+                            json.dumps(
+                                {
+                                    "window_offset": window_offset_int,
+                                    "attempt": used + 1,
+                                    "max": max_rs,
+                                    "feedback": feedback,
+                                },
+                                ensure_ascii=False,
+                            )
+                            + "\n"
+                        )
+                except Exception:
+                    pass
+                print(
+                    f"[info] Reflector rejected forecast; Investigator feature re-select "
+                    f"{used + 1}/{max_rs} for '{dataset_name}' offset={window_offset_int}"
+                )
+                raise RuntimeError(
+                    f"ReflectorAgent rejected forecast (reselect {used + 1}/{max_rs}): {feedback}. "
+                    "Re-call consult (feedback stored) to refresh F_selected, then emit again."
+                )
+            raise RuntimeError(f"ReflectorAgent rejected forecast: {feedback}")
+        # Approved: clear reselect state for this window.
+        key = (dataset_name, window_offset_int)
+        last_reflective_feedback.pop(key, None)
+        reselect_count.pop(key, None)
         try:
             with open(os.path.join(_dataset_out_dir(dataset_name), "reflector_report.jsonl"), "a", encoding="utf-8") as f:
                 f.write(json.dumps({"window_offset": window_offset_int, **reflection}, ensure_ascii=False) + "\n")
@@ -199,50 +348,74 @@ def create_generator_agent(
         os.makedirs(ds_out_dir, exist_ok=True)
         out_csv = os.path.join(ds_out_dir, "predictions.csv")
 
+        # Prefer Investigator F_selected when feature_selection is enabled (paper Eq. 6).
+        inv_selected = investor_packet.get("selected_features") if isinstance(investor_packet, dict) else None
+        inv_weights = investor_packet.get("feature_weights") if isinstance(investor_packet, dict) else None
+        mode = _feature_mode()
+        if mode in ("paper", "rules") and isinstance(inv_selected, list) and inv_selected:
+            selected_features = [str(n) for n in inv_selected]
+            if isinstance(inv_weights, dict) and inv_weights:
+                feature_weights = {str(k): float(v) for k, v in inv_weights.items() if str(k) in selected_features}
+            print(
+                f"[info] Using Investigator F_selected for '{dataset_name}': {selected_features} "
+                f"(method={investor_packet.get('selection_method')})"
+            )
+
         feat_path = os.path.join(ds_out_dir, "features.json")
-        if os.path.exists(feat_path):
+        # Prefer look-back features from packet when present.
+        packet_features = None
+        if isinstance(investor_packet, dict):
+            packet_features = investor_packet.get("features_full") or investor_packet.get("features")
+        if isinstance(packet_features, dict) and packet_features:
+            available_features = [str(k) for k in packet_features.keys()]
+        elif os.path.exists(feat_path):
             with open(feat_path, "r", encoding="utf-8") as f:
                 _feat = json.load(f)
-            if isinstance(_feat, dict) and _feat:
-                available_features = [str(k) for k in _feat.keys()]
-                desired_count = min(3, len(available_features)) if len(available_features) >= 3 else len(available_features)
+            available_features = [str(k) for k in _feat.keys()] if isinstance(_feat, dict) else []
+        else:
+            available_features = []
 
-                provided = []
-                if isinstance(selected_features, list):
-                    provided = [str(name) for name in selected_features if str(name) in available_features]
+        if available_features:
+            desired_count = min(3, len(available_features)) if len(available_features) >= 3 else len(available_features)
 
-                auto_added = False
-                if len(provided) < desired_count:
-                    for name in available_features:
-                        if name not in provided:
-                            provided.append(name)
-                        if len(provided) >= desired_count:
-                            break
-                    auto_added = True
+            provided = []
+            if isinstance(selected_features, list):
+                provided = [str(name) for name in selected_features if str(name) in available_features]
 
-                cleaned_weights: dict[str, float] = {}
-                if isinstance(feature_weights, dict):
-                    for key, value in feature_weights.items():
-                        if key in provided:
-                            try:
-                                cleaned_weights[key] = float(value)
-                            except Exception:
-                                continue
+            auto_added = False
+            # When Investigator already selected, do not pad with unrelated full-F names.
+            force_investigator = mode in ("paper", "rules") and isinstance(inv_selected, list) and bool(inv_selected)
+            if len(provided) < desired_count and not force_investigator:
+                for name in available_features:
+                    if name not in provided:
+                        provided.append(name)
+                    if len(provided) >= desired_count:
+                        break
+                auto_added = True
 
-                if len(cleaned_weights) != len(provided) or sum(cleaned_weights.values()) <= 0:
-                    weight = 1.0 / len(provided) if provided else 0.0
-                    cleaned_weights = {name: weight for name in provided} if provided else {}
-                else:
-                    total = float(sum(cleaned_weights.values())) or 1.0
-                    cleaned_weights = {name: float(val) / total for name, val in cleaned_weights.items()}
+            cleaned_weights: dict[str, float] = {}
+            if isinstance(feature_weights, dict):
+                for key_w, value in feature_weights.items():
+                    if key_w in provided:
+                        try:
+                            cleaned_weights[key_w] = float(value)
+                        except Exception:
+                            continue
 
-                if auto_added:
-                    print(
-                        f"[info] Auto-filled target features for dataset '{dataset_name}': {provided}"
-                    )
+            if provided and (len(cleaned_weights) != len(provided) or sum(cleaned_weights.values()) <= 0):
+                weight = 1.0 / len(provided)
+                cleaned_weights = {name: weight for name in provided}
+            elif cleaned_weights:
+                total = float(sum(cleaned_weights.values())) or 1.0
+                cleaned_weights = {name: float(val) / total for name, val in cleaned_weights.items()}
 
-                selected_features = provided
-                feature_weights = cleaned_weights
+            if auto_added:
+                print(
+                    f"[info] Auto-filled target features for dataset '{dataset_name}': {provided}"
+                )
+
+            selected_features = provided
+            feature_weights = cleaned_weights
 
         exo_top3_path = os.path.join(ds_out_dir, "exogenous_top3.json")
         exo_feat_path = os.path.join(ds_out_dir, "exogenous_features.json")
@@ -486,9 +659,15 @@ def create_generator_agent(
             json.dump(meta, f, indent=2)
 
         if selected_features is not None or feature_weights is not None:
-            sel = {"selected_features": selected_features, "feature_weights": feature_weights}
+            sel = {
+                "selected_features": selected_features,
+                "feature_weights": feature_weights,
+                "selection_method": investor_packet.get("selection_method") if isinstance(investor_packet, dict) else None,
+                "selection_rationale": investor_packet.get("selection_rationale") if isinstance(investor_packet, dict) else None,
+                "feature_selection_mode": mode,
+            }
             with open(os.path.join(ds_out_dir, "selected_features.json"), "w", encoding="utf-8") as f:
-                json.dump(sel, f, indent=2)
+                json.dump(sel, f, indent=2, ensure_ascii=False)
             try:
                 top_msg = features_used_note or ""
                 print(f"[info] LLM reported feature usage for dataset '{dataset_name}': {top_msg}")

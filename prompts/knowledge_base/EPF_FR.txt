@@ -1,0 +1,9 @@
+# Empirical knowledge for EPF_FR
+
+Derived notes for Knowledge Base (K); situational text remains in contextual_briefings/EPF_FR.txt as E.
+
+## EPF_FR Dataset Briefing
+
+France day-ahead electricity prices (hourly). The target is Price.
+Exogenous drivers are the generation forecast and the system load forecast.
+Nuclear and hydro availability can flatten prices; tight generation vs load tends to lift peaks.
