@@ -7,7 +7,7 @@ Co-Reasoning Framework for Cognitive Time Series Forecasting. </h1> -->
 
 ## 🧠 Overview
 
-CastMind is an **interaction-driven agentic reasoning** framework for time series forecasting. Instead of treating forecasting as a static, one-shot regression task, CastMind models it as an expert-like, multi-turn process powered by **training-free LLMs**. It organizes inference into a three-stage workflow: **(1) context extraction** (features, knowledge, attributes, and case-based references), **(2) reasoning-based generation** (produce an intermediate forecast with evidence-grounded adjustments), and **(3) reflective evaluation and refinement** (contract/evidence checks with iterative correction and a fallback strategy when needed). To support reliable reasoning, CastMind provides a lightweight toolkit including a **feature set**, **knowledge base**, **contextual pool**, and **case library**.
+
 
 <p align="center"><img src="./assets/framework.png" width="900px" alt="RICO Framework" /></p>
 
