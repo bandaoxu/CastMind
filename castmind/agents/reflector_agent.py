@@ -75,6 +75,35 @@ def _summarize_series(values: List[float]) -> List[float]:
     ]
 
 
+def _extend_context_from_exogenous(context: List[float], investor_packet: Dict[str, Any]) -> None:
+    """Prefer exogenous look-back / forecast series so CoT load/wind claims ground."""
+    for key in (
+        "look_back_exogenous_values",
+        "forecast_window_exogenous_values",
+    ):
+        block = investor_packet.get(key)
+        if not isinstance(block, dict):
+            continue
+        for _canon, entry in block.items():
+            if not isinstance(entry, dict):
+                continue
+            by_col = entry.get("values_by_column") or {}
+            if not isinstance(by_col, dict):
+                continue
+            for _col, series in by_col.items():
+                if not isinstance(series, list) or not series:
+                    continue
+                clean = [_safe_float(v) for v in series]
+                clean_f = [float(v) for v in clean if v is not None]
+                if not clean_f:
+                    continue
+                context.extend(_summarize_series(clean_f))
+                step = max(1, len(clean_f) // 16)
+                context.extend(clean_f[::step])
+                mid = len(clean_f) // 2
+                context.extend(clean_f[max(0, mid - 2) : mid + 3])
+
+
 def _collect_numeric_context(
     predictions: List[float],
     investor_packet: Dict[str, Any],
@@ -114,6 +143,9 @@ def _collect_numeric_context(
                 diffs.append(pred_f - ref_f)
         if diffs:
             context.extend(_summarize_series(diffs))
+
+    # Explicit exogenous series before deep walk (LLM tool args often omit them).
+    _extend_context_from_exogenous(context, investor_packet)
 
     def _walk(value: Any, seen: set[int]) -> None:
         if isinstance(value, bool) or value is None:
@@ -533,7 +565,9 @@ def create_reflector_agent(
         """
 
         Extra rules for this deployment:
-          - Call tool `deterministic_audit` exactly once with the provided JSON fields.
+          - Call tool `deterministic_audit` exactly once with the provided JSON fields
+            (predictions, predicted_window, chain_of_thought, window_offset). You may pass
+            investor_packet as {{}} — the server substitutes the full Investigator packet.
           - Then output ONLY a JSON object with keys approved (bool), issues (list[str]), notes (str).
           - Use the tool report as evidence; you decide approved. Do not invent numeric claims
             that are absent from the tool report / chain-of-thought.
@@ -546,14 +580,23 @@ def create_reflector_agent(
         ctx: RunContext[None],
         predictions: List[float],
         predicted_window: int,
-        investor_packet: dict,
+        investor_packet: dict | None = None,
         chain_of_thought: str = "",
         window_offset: int = 0,
     ) -> dict:
+        # Prefer the full packet bound by Generator (LLM tool args often truncate exo series).
+        server_packet = getattr(reflector_agent, "_castmind_full_investor_packet", None)
+        packet: dict
+        if isinstance(server_packet, dict) and server_packet:
+            packet = server_packet
+        elif isinstance(investor_packet, dict) and investor_packet:
+            packet = investor_packet
+        else:
+            packet = {}
         payload = {
             "predictions": predictions,
             "predicted_window": predicted_window,
-            "investor_packet": investor_packet or {},
+            "investor_packet": packet,
             "chain_of_thought": chain_of_thought or "",
             "window_offset": window_offset,
         }

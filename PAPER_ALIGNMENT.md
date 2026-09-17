@@ -11,9 +11,12 @@
 | 3 | `sunny_power` / `windy_power` / `MOPEX` | 代理数据；禁止与 Table 1 逐格对比 |
 | 4 | **临时：DeepSeek 替代 GPT-5** | 论文 §4.1 为 GPT-5；本机暂无 GPT-5 → `MODEL=deepseek-chat`。**必须披露**；系统行**不宣称**对齐 Table 1。有额度后应改回 GPT-5 |
 
-**应对齐：** 窗长/stride、指标、候选池、三 Agent（LLM Reflector 自己裁决）、EPF/ETT 公开数据、公开 FM 权重。  
+**应对齐：** 窗长/stride、指标、候选池、三 Agent（LLM Reflector 自己裁决）、EPF/ETT 公开数据、公开 FM 权重、**Train/Val/Test 三分**。  
+- **数据划分（2026-09-16）：** `data/<ds>/train.csv` / `val.csv` / `test.csv` 分文件，长度对齐论文 Table 5/6。系统案例库与 `training_csv` **只用 Train**。本仓 `train_checkpoints.py` 现为 Train 拟合 + Val 早停。旧「Train+Val 合并进 train.csv」已废弃 → **案例库 / LLM 系统行须重建重跑**。  
+  - **DL 权重：** 若为 **TSLib 官方划分**自训（Train/Val/Test），**不必**因本仓曾合并 `train.csv` 而重训；把 `.pth` 放到 `config.yaml` 所指路径即可。仅「本仓曾读合并 train.csv 训的 light」或「EPF 在 Price 写反期间训的」才需要重训。  
+  - 仍≠作者主表 `.pth`（未公开），数值不宣称对齐 Table 1 DL 格。
 - 短序 EPF：论文写明 168→24（N-BEATSx）；本仓 **`sliding_window=24`**（按日推进，与长序 stride=H 一致）。旧 `sliding_window=168` 是本仓疏采样，**不是**论文要求。  
-**可保留工程修 bug**（嵌套 `run_sync`、错误数字解析、resume exit 1）；**不要**加 soft-pass / 工具强制覆盖 LLM 裁决。
+**可保留工程修 bug**（嵌套 `run_sync`、错误数字解析、resume exit 1、Reflector 完整 packet 绑定）；**不要**加 soft-pass / 工具强制覆盖 LLM 裁决。
 
 短命令：[RUNBOOK.md](./RUNBOOK.md) · 跑数操作树：[WORKFLOW.md](./WORKFLOW.md) · 组会讲稿：[docs/组会分享_AlphaCast.md](./docs/组会分享_AlphaCast.md)
 
@@ -85,7 +88,7 @@ flowchart TD
 | 统计栈 | standard / StatsForecast 类 | AutoARIMA/CES/Croston/DOT = SF | 对齐（方法；非格级） | 勿改回 statsmodels 固定 ARIMA |
 | Sundial/Chronos | 公开权重 | `foundation_models/` + tf 4.40 | 对齐（量级；设备差次要） | `bash scripts/setup_env.sh` |
 | DL 结构 | TSLib official settings | vendored TSLib + official 预设自训（非 LTSF-Linear） | **近似** | `train_checkpoints --preset official` |
-| DL 权重 | 作者主表 `.pth`（未公开） | 本轮用 `DeepLearningCheckpoints/<ds>/` light 五模型；可选 official 自训 | **不可文件对齐** | 正文写明自训；本轮不跑 TimeXer |
+| DL 权重 | 作者主表 `.pth`（未公开） | **TSLib 官方划分自训**（主用）→ `DeepLearningCheckpoints/<ds>/`；本仓 `train_checkpoints` 为可选补训 | **不可文件对齐作者** | 正文写明 TSLib 自训；不跑 TimeXer |
 | AlphaCast 系统 | GPT-5 编排 | **临时** DeepSeek（例外 §4）；有 GPT-5 后改回 | **系统行数字不宣称对齐** | 披露 backbone 差异 |
 | 对比表 | Table 1 版式 | `docs/comparison_table.md` | 对齐（版式） | eval → assemble |
 
@@ -324,7 +327,7 @@ flowchart TD
 ### F0 本阶段口径（系统行数字不对齐）
 
 本机已用 **DeepSeek**（`deepseek-chat`）跑 CastMind 多数据集 LLM 系统行（十套全量进行中；见 [RUNBOOK.md](./RUNBOOK.md)）。  
-系统行（论文 AlphaCast 格 / 本机 CastMind_*）标为：**可跑通、不对齐主表数字**——DeepSeek≠GPT-5、light 自训≠作者 `.pth`。  
+系统行（论文 AlphaCast 格 / 本机 CastMind_*）标为：**可跑通、不对齐主表数字**——DeepSeek≠GPT-5、TSLib 自训≠作者 `.pth`。
 非 LLM 路径（协议、基线池、特征窗、案例库、briefing）见 [`docs/上游对齐差异.md`](docs/上游对齐差异.md)。
 
 ### F1 与论文同构思的部分
@@ -338,7 +341,7 @@ flowchart TD
 | 论文 | 本机 |
 |------|------|
 | GPT-5 | DeepSeek；不宣称主表格一致 |
-| 作者全池 + 官方 DL 权重 | light 自训五模型（无 TimeXer）+ 公开 FM |
+| 作者全池 + 官方 DL 权重 | TSLib 官方划分自训五模型（无 TimeXer）+ 公开 FM |
 
 ```bash
 # 可跑系统行验证流程；勿当作「复现 Table 1 AlphaCast 格」的验收：

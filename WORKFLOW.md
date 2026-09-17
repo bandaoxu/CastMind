@@ -104,10 +104,12 @@ ls data/ETTh1/train.csv data/ETTh1/test.csv
 
 | 类型 | 路径 | 操作 |
 |------|------|------|
-| DL light（默认） | `castmind/DeepLearningCheckpoints/<ds>/` 五模型 `.pth` | 本轮默认；**不跑 TimeXer**；`config.yaml` 已指向 |
-| DL official（可选） | `…/<ds>_official/` | 仅缺权重或刻意换预设时自训 |
+| DL（主用） | `castmind/DeepLearningCheckpoints/<ds>/` 五模型 `.pth` | **TSLib 官方划分自训**；`config.yaml` 已指向；**不跑 TimeXer**；不必因本仓三分法重训 |
+| DL 本仓补训（可选） | 同上或 `…/<ds>_official/` | 仅缺权重时用 `train_checkpoints.py`（现含 Val 早停） |
 | Sundial | `castmind/foundation_models/sundial-base-128m/` | 需已下载；主环境 tf4.40 才会入池 |
 | Chronos | `castmind/foundation_models/chronos-bolt-base/` | 需已下载 |
+
+**数据：** `data/<ds>/{train,val,test}.csv` 已三分；系统只用 `train.csv`。改切分后须**重建案例库并重跑 LLM**（与 DL 是否重训无关）。
 
 **验收池（无 DL 上下文时至少含统计+FM）：**
 
@@ -118,9 +120,9 @@ ls data/ETTh1/train.csv data/ETTh1/test.csv
 
 ---
 
-## 分支 1：（可选）自训 DL official
+## 分支 1：（可选）本仓补训 DL
 
-**本轮默认跳过。** 仅在缺 `.pth` 或要换 official 预设时：
+**主用权重为 TSLib 官方划分时跳过。** 仅在缺 `.pth` 或要换本仓配方时：
 
 ```bash
 .venv/bin/python scripts/train_checkpoints.py \
@@ -225,7 +227,7 @@ bash scripts/run.sh scripts/eval_baselines_table.py \
 ```
 
 论文数字来自 `scripts/paper_table1_reference.json`（十套齐全）。  
-**读表：** 版式可对照 Table 1；数值不宣称复现（DeepSeek / light / EPF 短覆盖 / 代理数据）。
+**读表：** 版式可对照 Table 1；数值不宣称复现（DeepSeek / TSLib 自训≠作者 `.pth` / 代理数据）。三分法后系统行须按纯 Train 重跑。
 
 **产出：**
 

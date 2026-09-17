@@ -194,8 +194,11 @@ amazon/chronos-bolt-base
 
 ### DL 权重身份
 
-当前 `config.yaml` 中各数据集指向 `castmind/DeepLearningCheckpoints/<ds>/*.pth`（**light 五模型**：Autoformer / DLinear / iTransformer / PatchTST / TimesNet）。  
-这是 **本机自训 light 权重**，**不是**作者 Table 1 权重；本轮**不跑 TimeXer**（无对应 `.pth`）。
+当前 `config.yaml` 指向 `castmind/DeepLearningCheckpoints/<ds>/*.pth`（五模型：Autoformer / DLinear / iTransformer / PatchTST / TimesNet；**不跑 TimeXer**）。
+
+**本机主用：TSLib 官方划分自训**（Train 拟合、Val 选模）——**不是**作者 Table 1 权重，但**不因** CastMind 曾把 Val 并进 `data/*/train.csv` 而失效。  
+本仓 `scripts/train_checkpoints.py` 为可选补训入口；若历史上读的是合并后的 `train.csv`，那些 light 权重才与「纯 Train」不一致，可弃用或 `--force` 重训。  
+EPF 若在 Price 列写反期间训过，仍须重训（与三分法无关）。
 
 ---
 
@@ -348,7 +351,7 @@ EPF 修前「MSE 几十万」主因是 **Price/外生列对调**，不是模型�
 
 ## 6. 数据准备（与作者一致性）
 
-`scripts/prepare_data.py`：
+`scripts/prepare_data.py`（**2026-09-16 起** `write_split` 写出独立 `train.csv` / `val.csv` / `test.csv`，不再把 Val 并进 train）：
 
 | 数据集 | 划分常量 | 来源 |
 |--------|----------|------|
@@ -358,8 +361,11 @@ EPF 修前「MSE 几十万」主因是 **Price/外生列对调**，不是模型�
 | Windy/Sunny | 代码用 POWER_SPLITS 同上 | **序列为 Open-Meteo 代理，不可对齐作者** |
 | MOPEX | 代码 `MOPEX_SPLITS = ETTH_SPLITS`，注释写「AlphaCast Table 6」 | 论文 Table 5 **无 MOPEX 行**；测站 `01022500` 为 stand-in |
 
-**EPF 列顺序（2026-09-13 已修）：** Zenodo/epftoolbox 为 `Price, Exo1, Exo2`。旧 `prepare_epf` 误写成外生在前、`Price` 取第 3 列，导致本机预报负荷量级、与 Table 1 差 4～6 个数量级。现映射为 `price, exo1, exo2 = value_cols[0], [1], [2]`；本地已重写 `data/EPF_*`。  
-**后果：** 修前全部 EPF LLM 归档与基线 JSON **作废**；修后基线（尤其统计/FM）可同量级对照；系统行须重跑 LLM。EPF `DeepLearningCheckpoints/EPF_*` light 权重也在错误目标上训过，公平 DL 行前宜重训。
+系统 `training_csv` = **仅 Train**；案例库历史窗按纯 Train 重建（ETTh1 约 88 窗，不再是合并时的 102）。  
+**DL：** TSLib 官方划分权重可继续用；Agent/LLM 须按新 Train 重跑。
+
+**EPF 列顺序（2026-09-13 已修）：** Zenodo/epftoolbox 为 `Price, Exo1, Exo2`。旧 `prepare_epf` 误写成外生在前、`Price` 取第 3 列。  
+**后果：** 修前 EPF LLM 归档与错误目标上的 EPF DL 权重作废；TSLib 若在修后数据上按官方划分重训的 EPF 权重可用。
 
 主复现数据集：**ETTh1**（公开同源）。十套中 EPF/ETTm 可协议级复现；WP/SP/MOPEX 只保留流水线（代理数据），不纳入与论文逐格对比。
 

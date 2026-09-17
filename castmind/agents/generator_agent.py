@@ -268,12 +268,20 @@ def create_generator_agent(
             "chain_of_thought": chain_text,
         }
         # Nested run_sync deadlocks inside a sync tool during an agent run; use async.
+        # Bind the full Investigator packet so deterministic_audit is not starved by
+        # LLM-truncated tool args (exogenous series otherwise look "ungrounded").
+        setattr(reflector_agent, "_castmind_full_investor_packet", investor_packet or {})
         reflector_prompt = (
-            "Audit this Generator forecast. Call deterministic_audit once with the fields below, "
-            "then output ONLY JSON {approved, issues, notes}.\n\n"
+            "Audit this Generator forecast. Call deterministic_audit exactly once with "
+            "predictions, predicted_window, chain_of_thought, and window_offset from the "
+            "JSON below. Pass investor_packet as {} (server supplies the full packet). "
+            "Then output ONLY JSON {approved, issues, notes}.\n\n"
             + json.dumps(reflection_request, default=json_default)
         )
-        reflection_result = await reflector_agent.run(reflector_prompt)
+        try:
+            reflection_result = await reflector_agent.run(reflector_prompt)
+        finally:
+            setattr(reflector_agent, "_castmind_full_investor_packet", None)
         try:
             raw_out = reflection_result.output
             if isinstance(raw_out, dict):

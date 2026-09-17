@@ -89,31 +89,36 @@ def _archive_existing(out_dir: Path) -> None:
 
 
 def write_split(df: pd.DataFrame, out_dir: Path, splits: Tuple[int, int, int], source: str) -> None:
+    """Paper Table 6: separate train / val / test (do NOT merge val into train)."""
     train_n, val_n, test_n = splits
     needed = train_n + val_n + test_n
     if len(df) < needed:
         raise ValueError(f"{out_dir.name}: need ≥{needed} rows for splits {splits}, got {len(df)}")
-    train = df.iloc[: train_n + val_n].copy()
+    train = df.iloc[:train_n].copy()
+    val = df.iloc[train_n : train_n + val_n].copy()
     test = df.iloc[train_n + val_n : needed].copy()
     out_dir.mkdir(parents=True, exist_ok=True)
     df.iloc[:needed].to_csv(out_dir / f"{out_dir.name}.csv", index=False)
     train.to_csv(out_dir / "train.csv", index=False)
+    val.to_csv(out_dir / "val.csv", index=False)
     test.to_csv(out_dir / "test.csv", index=False)
     meta = {
         "source": source,
         "rows_full": int(len(df)),
         "rows_used": needed,
-        "rows_train_plus_val": int(len(train)),
+        "rows_train": int(len(train)),
+        "rows_val": int(len(val)),
         "rows_test": int(len(test)),
+        "rows_train_plus_val": int(len(train) + len(val)),
         "splits": {"train": train_n, "val": val_n, "test": test_n},
         "columns": list(df.columns),
         "start": str(df["date"].iloc[0]),
         "end": str(df["date"].iloc[needed - 1]),
         "aligned": True,
-        "note": "Imported via scripts/import_aligned_dataset.py (Table 6 prefix split).",
+        "note": "Imported via scripts/import_aligned_dataset.py; train/val/test separated (Table 6).",
     }
     (out_dir / "split_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    print(f"[ok] {out_dir.name}: train={len(train)} test={len(test)} cols={list(df.columns)}")
+    print(f"[ok] {out_dir.name}: train={len(train)} val={len(val)} test={len(test)} cols={list(df.columns)}")
 
 
 def main() -> None:

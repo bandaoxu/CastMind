@@ -5,6 +5,8 @@ feature_selection: paper
 # Reflector → Investigator feature re-select attempts per window
 feature_reselect_max: 3
 use_exogenous: True
+# checkpoints: prefer TSLib official-split self-trained .pth under DeepLearningCheckpoints/<ds>/
+# (train fit + val select). Not author Table-1 weights. data/*/train.csv is Train-only (2026-09-16).
 
 datasets:
   - name: EPF_NP
@@ -96,7 +98,7 @@ datasets:
     predicted_window: 96
     sliding_window: 96
     frequency: h
-    # TSLib / AlphaCast-guide self-trained weights (freq=t widths).
+    # TSLib / AlphaCast-guide self-trained weights (official split: train fit, val select).
     checkpoints:
       Autoformer: castmind/DeepLearningCheckpoints/ETTh1/Autoformer.pth
       DLinear: castmind/DeepLearningCheckpoints/ETTh1/DLinear.pth

@@ -26,7 +26,7 @@ cp -n .env_template .env   # 若尚无 .env
 - `ORCHESTRATION_MODE=llm`
 - `OPENAI_BASE_URL=https://api.deepseek.com/v1` / `OPENAI_API_KEY` / `MODEL=deepseek-chat`
 
-**允许例外：** (1) API Key (2) 自训 DL `.pth` (3) sunny/windy/MOPEX 代理 (4) **临时 DeepSeek≠GPT-5（须披露，不宣称系统行复现主表）**。其余协议不要为刷分改。有 GPT-5 后把 `MODEL`/`BASE_URL` 改回论文设置。
+**允许例外：** (1) API Key (2) 自训 DL `.pth`（主用 **TSLib 官方划分**；≠作者主表）(3) sunny/windy/MOPEX 代理 (4) **临时 DeepSeek≠GPT-5（须披露）**。其余协议不要为刷分改。
 
 校验：
 
@@ -35,14 +35,29 @@ cp -n .env_template .env   # 若尚无 .env
 # 期望 4.40.x
 ```
 
-## 2. DL 权重（默认用现成 light）
+## 2. DL 权重
 
-本轮默认使用 [`castmind/DeepLearningCheckpoints/<数据集>/`](castmind/DeepLearningCheckpoints/) 下已有权重（**不是**名为 `light.pth` 的单文件；**light** 指相对 `*_official/` 的训练预设）：
+[`config.yaml`](config.yaml) 指向 [`castmind/DeepLearningCheckpoints/<数据集>/`](castmind/DeepLearningCheckpoints/) 五模型（Autoformer / DLinear / iTransformer / PatchTST / TimesNet；**不跑 TimeXer**）。
 
-- `Autoformer.pth` / `DLinear.pth` / `iTransformer.pth` / `PatchTST.pth` / `TimesNet.pth`
-- [`config.yaml`](config.yaml) 已指向上述路径
-- **不跑 TimeXer**（无 `TimeXer.pth`，本轮不补训、不评测）
-- **不强制** `train_checkpoints.py --preset official`
+**本机主用权重：TSLib 官方划分自训**（Train 拟合、Val 选模/早停）。  
+→ **不因** CastMind 曾把 Val 并进 `data/*/train.csv` 而作废；三分法改正的是本仓落盘与案例库，不是否定你的 TSLib `.pth`。
+
+| 权重来源 | 三分法后是否要重训 |
+|----------|-------------------|
+| **TSLib 官方划分**（你正在用的） | **否**（协议已是 Train/Val/Test） |
+| 本仓旧 `train_checkpoints.py` 读合并 `train.csv` 训的 light | 建议 `--force` 重训，或弃用改指 TSLib 权重 |
+| EPF×5 若在 **Price 列写反** 期间训的 | **仍要重训**（与三分法无关） |
+
+数据落盘（2026-09-16）：`data/<ds>/{train,val,test}.csv`（例：ETTh1 = 8544 / 1344 / 2544）。系统 `training_csv` **只用** `train.csv`。
+
+本仓补训入口（可选，非作者脚本）：
+
+```bash
+# Train 拟合 + Val 早停（默认 patience=3）；仅当缺 pth 或要换本仓配方时
+bash scripts/run.sh scripts/train_checkpoints.py --preset light --force --datasets ETTh1
+```
+
+**三分法后必做（与 DL 是否重训无关）：** 清空/重建各套 `outputs/<ds>/` 案例库并重跑 LLM（Agent 历史窗以前吃的是合并 Train+Val）。
 
 ## 3. 单数据集冒烟 / 主复现列（ETTh1）
 
@@ -116,7 +131,7 @@ ORCHESTRATION_MODE=llm bash scripts/run.sh --dataset <ds>
 
 - 中断 / Reflector 拒收 / 网络错误：会写 `outputs/<ds>/llm_resume_state.json`，**同命令重跑即可续跑**；未完整结束时 Experiment Summary 可能为空、**不会自动归档**，且进程 **exit 1**（`for … || break` 会停在该套）。
 - 完整结束后：`outputs/_archive/<ds>_llm_<MODEL>/`（含 `predictions.csv`）。
-- Reflector 默认仍是 **LLM**（论文路径）：工具 `deterministic_audit` 提供证据，**由 LLM 决定** `approved`。拒收后特征重选走 `prepare_investor_packet`。勿默认开 `CASTMIND_RULES_REFLECTOR=1`。
+- Reflector 默认仍是 **LLM**（论文路径）：工具 `deterministic_audit` 提供证据，**由 LLM 决定** `approved`。工具审计使用 Generator 绑定的**完整** Investigator packet（避免 LLM 缩水参数导致外生负荷/风电被误判无依据）。拒收后特征重选走 `prepare_investor_packet`。勿默认开 `CASTMIND_RULES_REFLECTOR=1`。
 - **EPF（短序）：** `look_back=168`、`predicted_window=24`、`sliding_window=24`（day-ahead，与长序「stride=horizon」一致）。约 **2856** 点满测；旧配置 stride=168 只评 ~408 点，**已废弃**，勿再当论文对照。
 - **长序**（ETTh1 / ETTm1 / MOPEX 等）：`sliding_window=96`，可接近满覆盖（如 ETTh1/MOPEX 2448 点；ETTm1 约 4800 点）。
 - **WP / SP / MOPEX**：本机为代理数据，可跑通流水线，**禁止与论文 Table 1 逐格对比**。见 [`docs/数据缺口_Windy_Sundy_MOPEX.md`](docs/数据缺口_Windy_Sundy_MOPEX.md)。
@@ -172,6 +187,6 @@ EPF 基线应与论文同量级；若再出现 MSE 几十万，先查 `Price` �
 
 - 公开权重基线（Chronos / Sundial）适合与论文比绝对数量级；设备≠A100 是次要浮点残差。
 - 统计：方法 + 协议可对齐，**非**与 Table 1 格级完整一致。
-- 自训 light DL + DeepSeek≠GPT-5：不宣称与论文 Table 1 逐格复现。
+- 自训 DL（**TSLib 官方划分**）+ DeepSeek≠GPT-5：不宣称与论文 Table 1 逐格复现；三分法后须重建案例库/重跑 LLM，**不必**仅为三分法重训 TSLib 权重。
 - 完整复现口径见 [PAPER_ALIGNMENT.md 分支 H](./PAPER_ALIGNMENT.md#分支-h三类基线如何得到--能否复现作者)。
 - 数据缺口（WP/SP/MOPEX）：[`docs/数据缺口_Windy_Sundy_MOPEX.md`](docs/数据缺口_Windy_Sundy_MOPEX.md)。
