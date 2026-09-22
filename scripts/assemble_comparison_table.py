@@ -39,8 +39,9 @@ PAPER_ROW_ORDER = [
 ]
 
 # Paper display name -> local get_default_models() alias
+# AlphaCast local cell = outputs/<ds>/predictions.csv (CastMind_current).
 PAPER_TO_LOCAL = {
-    "AlphaCast": None,  # system row; filled by CastMind_* only
+    "AlphaCast": "CastMind_current",
     "Sundial": "Sundial",
     "Chronos": "Chronos",
     "DLinear": "DLinear",
@@ -57,11 +58,6 @@ PAPER_TO_LOCAL = {
     "Optimizers": "DynamicOptimizedTheta",
     "HistoricAverage": "HistoricAverage",
 }
-
-CASTMIND_ORDER = [
-    "CastMind_llm_deepseek",
-    "CastMind_current",
-]
 
 
 def _load_json(path: Path) -> Any:
@@ -143,24 +139,6 @@ def assemble_dataset(
             }
         )
 
-    # CastMind system rows under AlphaCast (always include when present)
-    for cm in CASTMIND_ORDER:
-        local = local_by_alias.get(cm)
-        if not local:
-            continue
-        rows_out.append(
-            {
-                "method": cm,
-                "local_alias": cm,
-                "paper_MSE": None,
-                "paper_MAE": None,
-                "local_MSE": local.get("MSE"),
-                "local_MAE": local.get("MAE"),
-                "local_n": local.get("n_points"),
-                "local_error": local.get("error"),
-            }
-        )
-
     if not paper_rows_only:
         # Append any other local models not already shown
         shown = {r["local_alias"] for r in rows_out if r.get("local_alias")}
@@ -196,11 +174,10 @@ def write_markdown(
     lines.append(
         "> **同构进度：** 季节按 frequency（如 ETTh `h→24`）；统计 AutoARIMA=StatsForecast；"
         "DL 用 `DeepLearningCheckpoints/<ds>/` light 五模型（非作者权重；本轮无 TimeXer）；"
-        "系统行 = DeepSeek CastMind（已跑归档）。"
+        "本机 **AlphaCast** 行 = `outputs/<ds>/predictions.csv`（CastMind_current / DeepSeek）。"
         "**不宣称逐格复现：** DeepSeek≠GPT-5；light≠作者 `.pth`；"
         "EPF 短序覆盖不全；WP/SP/MOPEX 为代理数据。"
-        " **EPF 数据：** 2026-09-13 已修 Price/外生列对调；基线应与论文同量级；"
-        "EPF 的 CastMind 归档仍按旧错误目标预测，**系统行失效待重跑 LLM**。"
+        " **EPF 数据：** 2026-09-13 已修 Price/外生列对调；基线应与论文同量级。"
     )
     lines.append(">")
     lines.append(
@@ -228,9 +205,6 @@ def write_markdown(
                 continue
             if "partial" in name.lower():
                 continue
-            if name.startswith("CastMind_"):
-                # Prefer CastMind among system rows for bold, or include all full-n
-                pass
             if full_n and n is not None and int(n) < full_n:
                 continue
             local_scores.append((name, float(mse_v)))
@@ -259,11 +233,11 @@ def write_markdown(
         "- **近似对齐：** DL 为 TSLib 风格自训 `*_official`（无作者官方权重时的上限）。"
     )
     lines.append(
-        "- **不可对齐（本阶段故意跳过）：** 作者主表 `.pth`；系统 LLM API（不跑、不对齐系统行）；"
-        "不宣称逐格复现。"
+        "- **不可对齐：** 作者主表 `.pth`；本机 AlphaCast 为 DeepSeek 系统行，不宣称与 GPT-5 逐格一致。"
     )
     lines.append(
-        "- **CastMind_***：若来自历史 archive，仅作披露，**非本阶段验收项**。"
+        "- **AlphaCast（本机）**：仅用当前 `outputs/<ds>/`（与 `_archive/<ds>_llm_deepseekchat` 同步）；"
+        "不另列历史 `*_llm_deepseek` 行。"
     )
     lines.append("")
 

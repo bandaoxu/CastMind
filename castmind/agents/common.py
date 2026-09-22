@@ -69,10 +69,17 @@ def prepare_investor_packet(
 
     Generator scope (``include_case_evidence=True``, paper §3.4.1): also retrieve
     cluster auxiliary forecast and neighbor trajectories.
+
+    Config gates (default True): ``use_features``, ``use_knowledge``,
+    ``use_case_library`` further restrict what is injected (ablation).
     """
 
     dataset_name = ds_cfg.name
     ds_out_dir = os.path.join(cfg.output_dir, dataset_name) if cfg else os.path.join("outputs", dataset_name)
+    use_knowledge = getattr(cfg, "use_knowledge", True) if cfg is not None else True
+    use_case_library = getattr(cfg, "use_case_library", True) if cfg is not None else True
+    effective_case = bool(include_case_evidence) and bool(use_case_library)
+    effective_knowledge_lookup = knowledge_lookup if use_knowledge else None
 
     def _read_json(filename: str):
         path = os.path.join(ds_out_dir, filename)
@@ -148,9 +155,11 @@ def prepare_investor_packet(
             )
         except Exception:
             pass
+    else:
+        features = {}
 
     # --- Case library evidence (Generator-owned per paper §3.4.1) ---
-    if include_case_evidence:
+    if effective_case:
         config_sel_model = getattr(cfg, "sel_model", None) if cfg else None
         if config_sel_model:
             try:
@@ -254,12 +263,12 @@ def prepare_investor_packet(
                 except Exception as exc:
                     primary_exc = exc
                     continue
-            if reference_prediction is None and primary_exc is not None and include_case_evidence:
+            if reference_prediction is None and primary_exc is not None and effective_case:
                 raise primary_exc
 
     neighbor_lookback = None
     neighbor_pred = None
-    if include_case_evidence and case_neighbor_raw:
+    if effective_case and case_neighbor_raw:
         try:
             cases_neighbor = [
                 CaseNeighbor(look_back_window=c.get("look_back_window", []), pred_window=c.get("pred_window", []))
@@ -441,7 +450,7 @@ def prepare_investor_packet(
                 exogenous_column_details,
             )
 
-    if include_case_evidence:
+    if effective_case:
         basemodel_result = {
             "step_index": len(basemodel_results) + 1,
             "best_model": best_model,
@@ -451,6 +460,21 @@ def prepare_investor_packet(
         }
         basemodel_results.append(basemodel_result)
 
+        os.makedirs(ds_out_dir, exist_ok=True)
+        with open(os.path.join(ds_out_dir, "basemodel_results.json"), "w", encoding="utf-8") as f:
+            json.dump(basemodel_results, f, indent=2)
+    elif include_case_evidence:
+        # Generator scope with case library ablated: still append a stub so the
+        # orchestration loop can attach start_timestamp without FileNotFoundError.
+        basemodel_result = {
+            "step_index": len(basemodel_results) + 1,
+            "best_model": None,
+            "recommended_model": None,
+            "configured_model": None,
+            "reference_prediction": None,
+            "case_library_ablated": True,
+        }
+        basemodel_results.append(basemodel_result)
         os.makedirs(ds_out_dir, exist_ok=True)
         with open(os.path.join(ds_out_dir, "basemodel_results.json"), "w", encoding="utf-8") as f:
             json.dump(basemodel_results, f, indent=2)
@@ -510,7 +534,11 @@ def prepare_investor_packet(
                 selection_method = "override"
             elif mode and str(mode).lower() != "off" and isinstance(features, dict) and features:
                 context_text = briefing_lookup.get(dataset_name, "") if briefing_lookup else ""
-                knowledge_text = (knowledge_lookup or {}).get(dataset_name, "") if knowledge_lookup else ""
+                knowledge_text = (
+                    (effective_knowledge_lookup or {}).get(dataset_name, "")
+                    if effective_knowledge_lookup
+                    else ""
+                )
                 briefing = "\n\n".join(p for p in (knowledge_text, context_text) if p)
                 selected_features, feature_weights, selection_rationale, selection_method = select_features_for_mode(
                     str(mode),
@@ -545,7 +573,11 @@ def prepare_investor_packet(
     }
 
     context_text = briefing_lookup.get(dataset_name, "") if briefing_lookup else ""
-    knowledge_text = (knowledge_lookup or {}).get(dataset_name, "") if knowledge_lookup else ""
+    knowledge_text = (
+        (effective_knowledge_lookup or {}).get(dataset_name, "")
+        if effective_knowledge_lookup
+        else ""
+    )
     dataset_briefing = "\n\n".join(
         p for p in (
             f"[Knowledge K]\n{knowledge_text}" if knowledge_text else "",
@@ -579,7 +611,15 @@ def prepare_investor_packet(
         "knowledge": knowledge_text,
         "context": context_text,
         "dataset_briefing": dataset_briefing or context_text,
-        "include_case_evidence": bool(include_case_evidence),
+        "include_case_evidence": bool(effective_case),
+        "ablation_flags": {
+            "use_features": bool(getattr(cfg, "use_features", True) if cfg is not None else True),
+            "use_knowledge": bool(use_knowledge),
+            "use_case_library": bool(use_case_library),
+            "use_reflector": bool(getattr(cfg, "use_reflector", True) if cfg is not None else True),
+            "two_stage": bool(getattr(cfg, "two_stage", False) if cfg is not None else False),
+            "enhanced_reflect": bool(getattr(cfg, "enhanced_reflect", False) if cfg is not None else False),
+        },
         "exogenous_features": exo_features,
         "exogenous_correlations": exo_corr,
         "exogenous_top3": exo_top3,
@@ -804,6 +844,7 @@ def deterministic_run_for_dataset(cfg: ExperimentConfig, ds) -> dict:
         "MAE": mae(y_true, y_pred),
         "sMAPE": smape(y_true, y_pred),
         "model": model_name,
+        "n": int(len(y_true)),
     }
 
 

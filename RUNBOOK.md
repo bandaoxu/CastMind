@@ -5,6 +5,7 @@
 密钥只放在 `.env`，勿写入本文件。
 
 **详细思维导图 + 逐步说明：**  
+- 多人协作（拉取后配置 / PR）：[COLLABORATING.md](./COLLABORATING.md)  
 - 与论文对齐（推荐）：[PAPER_ALIGNMENT.md](./PAPER_ALIGNMENT.md)  
 - 纯跑数操作树：[WORKFLOW.md](./WORKFLOW.md)  
 - 组会分享讲稿：[docs/组会分享_AlphaCast.md](./docs/组会分享_AlphaCast.md)  
@@ -121,7 +122,7 @@ for ds in EPF_NP EPF_PJM EPF_BE EPF_FR EPF_DE ETTh1 ETTm1 windy_power sunny_powe
 done
 ```
 
-成功：非空 Experiment Summary + 新时间戳的 `outputs/_archive/<ds>_llm_<MODEL>/predictions.csv`。  
+成功：非空 Experiment Summary + `outputs/<ds>/metrics.json`（MSE/MAE/sMAPE/n）+ 新时间戳的 `outputs/_archive/<ds>_llm_<MODEL>/`（含 `predictions.csv` 与 `metrics.json`）。  
 若要从零重跑某套（丢掉半截进度）：
 
 ```bash
@@ -132,9 +133,56 @@ ORCHESTRATION_MODE=llm bash scripts/run.sh --dataset <ds>
 - 中断 / Reflector 拒收 / 网络错误：会写 `outputs/<ds>/llm_resume_state.json`，**同命令重跑即可续跑**；未完整结束时 Experiment Summary 可能为空、**不会自动归档**，且进程 **exit 1**（`for … || break` 会停在该套）。
 - 完整结束后：`outputs/_archive/<ds>_llm_<MODEL>/`（含 `predictions.csv`）。
 - Reflector 默认仍是 **LLM**（论文路径）：工具 `deterministic_audit` 提供证据，**由 LLM 决定** `approved`。工具审计使用 Generator 绑定的**完整** Investigator packet（避免 LLM 缩水参数导致外生负荷/风电被误判无依据）。拒收后特征重选走 `prepare_investor_packet`。勿默认开 `CASTMIND_RULES_REFLECTOR=1`。
+- **消融门闩：** `--ablation no_feature|no_knowledge|no_case|no_reflect|two_stage|enhanced_reflect`。前四项关掉对应工具/反思；后两项为「更长推理」类（§4.4）。`CASTMIND_RULES_REFLECTOR` **不是** `no_reflect`。冒烟可用 `CASTMIND_MAX_STEPS=5`（不定稿）。
+- **补写旧跑指标：** `.venv/bin/python scripts/backfill_metrics.py`（可选 `--working` / `--force`）；从已有 `predictions.csv` 生成 `metrics.json`，不重跑 LLM。
 - **EPF（短序）：** `look_back=168`、`predicted_window=24`、`sliding_window=24`（day-ahead，与长序「stride=horizon」一致）。约 **2856** 点满测；旧配置 stride=168 只评 ~408 点，**已废弃**，勿再当论文对照。
 - **长序**（ETTh1 / ETTm1 / MOPEX 等）：`sliding_window=96`，可接近满覆盖（如 ETTh1/MOPEX 2448 点；ETTm1 约 4800 点）。
 - **WP / SP / MOPEX**：本机为代理数据，可跑通流水线，**禁止与论文 Table 1 逐格对比**。见 [`docs/数据缺口_Windy_Sundy_MOPEX.md`](docs/数据缺口_Windy_Sundy_MOPEX.md)。
+
+### 4.0 ETTh1 消融满测（定稿，n=2448）
+
+主表用**满测**，对照已有 Full：`outputs/_archive/ETTh1_llm_deepseekchat`（勿重跑 Full）。  
+**不要**设 `CASTMIND_MAX_STEPS`。5 窗结果仅冒烟/附录。
+
+#### 4.0.1 工具集 + 去掉反思（Table 2 / §4.3.2）
+
+```bash
+rm -f outputs/ETTh1/llm_resume_state.json
+ORCHESTRATION_MODE=llm MODEL=deepseek-chat \
+  bash scripts/run.sh --dataset ETTh1 --ablation no_case
+# 同理：no_knowledge / no_feature / no_reflect
+```
+
+#### 4.0.2 Two-stage（Table 4 / §4.4.2）与 Enhanced Reflection（§4.4.3）
+
+论文设定摘要：
+- **two_stage**：每一窗先生成前半段 H/2，暂停，再生成后半段（打断连续推理）。约 **2×** API 调用/窗。
+- **enhanced_reflect**：更长反思链 + 按时钟对齐的训练段做二次修正（写 `enhanced_reflect_report.jsonl`）。
+
+```bash
+# Two-stage 满测（归档 ETTh1_llm_deepseekchat_two_stage）
+rm -f outputs/ETTh1/llm_resume_state.json
+ORCHESTRATION_MODE=llm MODEL=deepseek-chat \
+  bash scripts/run.sh --dataset ETTh1 --ablation two_stage
+
+# Enhanced Reflection 满测（归档 ETTh1_llm_deepseekchat_enhanced_reflect）
+rm -f outputs/ETTh1/llm_resume_state.json
+ORCHESTRATION_MODE=llm MODEL=deepseek-chat \
+  bash scripts/run.sh --dataset ETTh1 --ablation enhanced_reflect
+```
+
+冒烟（可选，不定稿）：
+
+```bash
+CASTMIND_MAX_STEPS=2 ORCHESTRATION_MODE=llm MODEL=deepseek-chat \
+  bash scripts/run.sh --dataset ETTh1 --ablation two_stage
+
+CASTMIND_MAX_STEPS=2 ORCHESTRATION_MODE=llm MODEL=deepseek-chat \
+  bash scripts/run.sh --dataset ETTh1 --ablation enhanced_reflect
+```
+
+验收：归档 `metrics.json` 中 **n=2448**；与 Full 比 MSE/MAE。论文预期这两臂往往**更差**（「更多推理≠更好」）。  
+披露：`deepseek-chat` ≠ GPT-5；ETTh1 ≠ 论文 Table 4 的 BE/PJM/Windy。
 
 ### 4.1 进度快照（2026-09-13）
 

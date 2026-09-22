@@ -293,11 +293,9 @@ def main() -> None:
             # dataset's paths for every later dataset (empty-alignment / wrong MSE).
             specs = list(args.from_archive)
             if len(specs) == 0:
-                # Auto-discover common archives for this dataset
-                archive_root = ROOT / "outputs" / "_archive"
+                # Auto-discover: local AlphaCast = current outputs/<ds>/ only.
                 defaults = [
-                    (f"CastMind_llm_deepseek", archive_root / f"{ds.name}_llm_deepseek" / "predictions.csv"),
-                    (f"CastMind_current", ROOT / "outputs" / ds.name / "predictions.csv"),
+                    ("CastMind_current", ROOT / "outputs" / ds.name / "predictions.csv"),
                 ]
                 for label, path in defaults:
                     if path.is_file():

@@ -10,7 +10,7 @@ import pandas as pd
 from pydantic_ai import Agent, RunContext  # type: ignore
 
 from castmind.config import DatasetConfig, ExperimentConfig
-from castmind.data_loader import TIME_COL
+from castmind.data_loader import TIME_COL, infer_target_column
 from .prompts import get_agent_instructions
 
 
@@ -28,6 +28,57 @@ GENERATOR_AGENT_PROMPT_FALLBACK = dedent(
     Always call `record_chain_of_thought` before `emit_predictions`. Avoid writing step indices like "Step 0" in the chain-of-thought.
     """
 )
+
+
+def _timestamp_aligned_history_segment(
+    ds_cfg: Optional[DatasetConfig],
+    dataset_name: str,
+    horizon: int,
+    investor_packet: dict,
+) -> Dict[str, Any]:
+    """Same-clock historical segment of length H from train (paper §4.4.3)."""
+    out: Dict[str, Any] = {"source": None, "values": None, "notes": ""}
+    H = int(horizon)
+    if H <= 0:
+        out["notes"] = "invalid_horizon"
+        return out
+
+    start_ts = investor_packet.get("prediction_start_timestamp")
+    if ds_cfg is not None:
+        try:
+            train = pd.read_csv(ds_cfg.training_csv)
+            train[TIME_COL] = pd.to_datetime(train[TIME_COL])
+            train = train.sort_values(TIME_COL).reset_index(drop=True)
+            col = infer_target_column(train, dataset_name)
+            y = train[col].to_numpy(dtype=float)
+            ts = train[TIME_COL]
+            if start_ts:
+                target = pd.Timestamp(start_ts)
+                th = int(target.hour)
+                tw = int(target.dayofweek)
+                candidates: List[int] = []
+                for i in range(0, max(0, len(y) - H)):
+                    ti = ts.iloc[i]
+                    if int(ti.hour) == th and int(ti.dayofweek) == tw:
+                        candidates.append(i)
+                if candidates:
+                    i = candidates[-1]
+                    out["values"] = [float(v) for v in y[i : i + H].tolist()]
+                    out["source"] = f"train_clock_align@{pd.Timestamp(ts.iloc[i]).isoformat()}"
+                    return out
+            # Fallback: neighbor trajectory from case library (similarity, not clock).
+            neighbor = investor_packet.get("neighbor_pred")
+            if isinstance(neighbor, list) and len(neighbor) >= H:
+                out["values"] = [float(x) for x in neighbor[:H]]
+                out["source"] = "neighbor_pred_fallback"
+                out["notes"] = "no_clock_match; used_neighbor"
+                return out
+            out["notes"] = "no_clock_match_and_no_neighbor"
+        except Exception as exc:
+            out["notes"] = f"history_lookup_failed: {exc}"
+    else:
+        out["notes"] = "missing_dataset_config"
+    return out
 
 
 def create_generator_agent(
@@ -132,6 +183,7 @@ def create_generator_agent(
 
         inv_packet = _run_investigator(dataset_name, window_offset_int, forecast_horizon, feedback)
         # Generator retrieves cluster auxiliary + neighbor (paper places this under Generator).
+        use_case = bool(getattr(cfg, "use_case_library", True)) if cfg is not None else True
         packet = prepare_investor_packet(
             cfg,
             ds_cfg,
@@ -140,7 +192,7 @@ def create_generator_agent(
             forecast_horizon,
             reflective_feedback=feedback,
             knowledge_lookup=knowledge_lookup,
-            include_case_evidence=True,
+            include_case_evidence=use_case,
             preselected_features=inv_packet.get("selected_features"),
             preselected_weights=inv_packet.get("feature_weights"),
         )
@@ -222,6 +274,7 @@ def create_generator_agent(
         investor_packet = investigator_cache.get((dataset_name, window_offset_int))
         if investor_packet is None and ds_cfg is not None:
             try:
+                use_case = bool(getattr(cfg, "use_case_library", True)) if cfg is not None else True
                 investor_packet = prepare_investor_packet(
                     cfg,
                     ds_cfg,
@@ -229,7 +282,7 @@ def create_generator_agent(
                     window_offset_int,
                     H,
                     knowledge_lookup=knowledge_lookup,
-                    include_case_evidence=True,
+                    include_case_evidence=use_case,
                 )
             except Exception:
                 investor_packet = {}
@@ -267,39 +320,59 @@ def create_generator_agent(
             "investor_packet": investor_packet or {},
             "chain_of_thought": chain_text,
         }
-        # Nested run_sync deadlocks inside a sync tool during an agent run; use async.
-        # Bind the full Investigator packet so deterministic_audit is not starved by
-        # LLM-truncated tool args (exogenous series otherwise look "ungrounded").
-        setattr(reflector_agent, "_castmind_full_investor_packet", investor_packet or {})
-        reflector_prompt = (
-            "Audit this Generator forecast. Call deterministic_audit exactly once with "
-            "predictions, predicted_window, chain_of_thought, and window_offset from the "
-            "JSON below. Pass investor_packet as {} (server supplies the full packet). "
-            "Then output ONLY JSON {approved, issues, notes}.\n\n"
-            + json.dumps(reflection_request, default=json_default)
-        )
-        try:
-            reflection_result = await reflector_agent.run(reflector_prompt)
-        finally:
-            setattr(reflector_agent, "_castmind_full_investor_packet", None)
-        try:
-            raw_out = reflection_result.output
-            if isinstance(raw_out, dict):
-                reflection = raw_out
+        use_reflector = bool(getattr(cfg, "use_reflector", True)) if cfg is not None else True
+        enhanced = bool(getattr(cfg, "enhanced_reflect", False)) if cfg is not None else False
+        if not use_reflector:
+            reflection = {
+                "approved": True,
+                "issues": [],
+                "notes": "ablation:use_reflector=false; skipped Reflector",
+            }
+        else:
+            # Nested run_sync deadlocks inside a sync tool during an agent run; use async.
+            # Bind the full Investigator packet so deterministic_audit is not starved by
+            # LLM-truncated tool args (exogenous series otherwise look "ungrounded").
+            setattr(reflector_agent, "_castmind_full_investor_packet", investor_packet or {})
+            if enhanced:
+                reflector_prompt = (
+                    "Audit this Generator forecast with an EXTENDED reflective chain "
+                    "(write detailed notes covering baseline deviation, exogenous outlook, "
+                    "and temporal consistency). Call deterministic_audit exactly once with "
+                    "predictions, predicted_window, chain_of_thought, and window_offset from the "
+                    "JSON below. Pass investor_packet as {} (server supplies the full packet). "
+                    "Then output ONLY JSON {approved, issues, notes}.\n\n"
+                    + json.dumps(reflection_request, default=json_default)
+                )
             else:
-                text = str(raw_out).strip()
-                if text.startswith("```"):
-                    text = text.strip("`")
-                    if text.startswith("json"):
-                        text = text[4:].strip()
-                reflection = json.loads(text)
-        except Exception:
-            # Parse failure only: fall back to deterministic audit (not an approval override).
-            from castmind.agents.common import assess_forecast as _assess
-            from castmind.agents.reflector_agent import build_deterministic_audit_report
+                reflector_prompt = (
+                    "Audit this Generator forecast. Call deterministic_audit exactly once with "
+                    "predictions, predicted_window, chain_of_thought, and window_offset from the "
+                    "JSON below. Pass investor_packet as {} (server supplies the full packet). "
+                    "Then output ONLY JSON {approved, issues, notes}.\n\n"
+                    + json.dumps(reflection_request, default=json_default)
+                )
+            try:
+                reflection_result = await reflector_agent.run(reflector_prompt)
+            finally:
+                setattr(reflector_agent, "_castmind_full_investor_packet", None)
+            try:
+                raw_out = reflection_result.output
+                if isinstance(raw_out, dict):
+                    reflection = raw_out
+                else:
+                    text = str(raw_out).strip()
+                    if text.startswith("```"):
+                        text = text.strip("`")
+                        if text.startswith("json"):
+                            text = text[4:].strip()
+                    reflection = json.loads(text)
+            except Exception:
+                # Parse failure only: fall back to deterministic audit (not an approval override).
+                from castmind.agents.common import assess_forecast as _assess
+                from castmind.agents.reflector_agent import build_deterministic_audit_report
 
-            reflection = build_deterministic_audit_report(reflection_request, _assess)
-            reflection.setdefault("notes", (reflection.get("notes") or "") + "; fallback_parse_rules_audit")
+                reflection = build_deterministic_audit_report(reflection_request, _assess)
+                reflection.setdefault("notes", (reflection.get("notes") or "") + "; fallback_parse_rules_audit")
         if not reflection.get("approved", False):
             issues = reflection.get("issues") or []
             notes = reflection.get("notes") or ""
@@ -351,6 +424,87 @@ def create_generator_agent(
                 f.write(json.dumps({"window_offset": window_offset_int, **reflection}, ensure_ascii=False) + "\n")
         except Exception:
             pass
+
+        # Paper §4.4.3 Enhanced Reflection: longer chain already used above; secondary
+        # correction via timestamp-aligned historical segment.
+        if enhanced and use_reflector:
+            hist = _timestamp_aligned_history_segment(
+                ds_cfg,
+                dataset_name,
+                H,
+                investor_packet if isinstance(investor_packet, dict) else {},
+            )
+            enhance_req = {
+                "dataset_name": dataset_name,
+                "window_offset": window_offset_int,
+                "original_predictions": arr.tolist(),
+                "predicted_window": H,
+                "timestamp_aligned_history": hist,
+                "chain_of_thought": chain_text,
+            }
+            enhance_prompt = (
+                "ENHANCED REFLECTION (§4.4.3 ablation): You already audited the forecast. "
+                "Now write a LONGER reflective analysis, then apply a secondary correction "
+                "anchored on the timestamp-aligned historical segment (same clock pattern). "
+                "Output ONLY JSON "
+                "{approved: true, revised_predictions: [<exactly predicted_window floats>], "
+                "notes: string, issues: []}.\n\n"
+                + json.dumps(enhance_req, default=json_default)
+            )
+            enhance_notes = ""
+            try:
+                setattr(reflector_agent, "_castmind_full_investor_packet", investor_packet or {})
+                try:
+                    enhance_result = await reflector_agent.run(enhance_prompt)
+                finally:
+                    setattr(reflector_agent, "_castmind_full_investor_packet", None)
+                raw_enh = enhance_result.output
+                if isinstance(raw_enh, dict):
+                    enhance_obj = raw_enh
+                else:
+                    text = str(raw_enh).strip()
+                    if text.startswith("```"):
+                        text = text.strip("`")
+                        if text.startswith("json"):
+                            text = text[4:].strip()
+                    enhance_obj = json.loads(text)
+                revised = enhance_obj.get("revised_predictions")
+                enhance_notes = str(enhance_obj.get("notes") or "")
+                if isinstance(revised, list) and len(revised) == H:
+                    rev_arr = np.asarray(revised, dtype=float)
+                    if np.all(np.isfinite(rev_arr)):
+                        print(
+                            f"[info] Enhanced reflection revised forecast for '{dataset_name}' "
+                            f"offset={window_offset_int} (hist={hist.get('source')})"
+                        )
+                        arr = rev_arr
+                    else:
+                        enhance_notes = (enhance_notes + "; ignored_nonfinite_revision").strip("; ")
+                else:
+                    enhance_notes = (enhance_notes + "; ignored_bad_revised_length").strip("; ")
+            except Exception as exc:
+                enhance_notes = f"enhanced_reflect_failed: {exc}"
+                print(f"[warn] Enhanced reflection skipped for '{dataset_name}': {exc}")
+            try:
+                with open(
+                    os.path.join(_dataset_out_dir(dataset_name), "enhanced_reflect_report.jsonl"),
+                    "a",
+                    encoding="utf-8",
+                ) as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "window_offset": window_offset_int,
+                                "history_source": hist.get("source"),
+                                "notes": enhance_notes,
+                            },
+                            ensure_ascii=False,
+                            default=json_default,
+                        )
+                        + "\n"
+                    )
+            except Exception:
+                pass
 
         ds_out_dir = os.path.join(output_dir, dataset_name)
         os.makedirs(ds_out_dir, exist_ok=True)

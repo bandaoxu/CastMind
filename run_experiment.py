@@ -13,7 +13,14 @@ import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 
-from castmind.config import DatasetConfig, ExperimentConfig, load_config
+from castmind.config import (
+    DatasetConfig,
+    ExperimentConfig,
+    ABLATION_CHOICES,
+    ablation_flags_dict,
+    apply_ablation,
+    load_config,
+)
 from castmind.data_loader import TIME_COL, infer_target_column
 from castmind.agents.runtime import (
     build_agent_or_none,
@@ -37,13 +44,60 @@ def _archive_tag(dataset_name: str) -> str:
     runtime = (os.getenv("CASTMIND_RUNTIME") or "main").strip().lower()
     model = (os.getenv("MODEL") or "llm").strip().lower()
     model_slug = re.sub(r"[^a-z0-9]+", "", model) or "llm"
+    ablation = (os.getenv("CASTMIND_ABLATION") or "").strip().lower()
+    ablation_suffix = f"_{ablation}" if ablation in ABLATION_CHOICES else ""
     if mode == "llm" and runtime in {"main", "primary", "default"}:
-        return f"{dataset_name}_llm_{model_slug}"
+        return f"{dataset_name}_llm_{model_slug}{ablation_suffix}"
     if mode == "llm" and runtime in {"sundial", "side", "sideenv"}:
-        return f"{dataset_name}_llm_sundial"
+        return f"{dataset_name}_llm_sundial{ablation_suffix}"
     if mode == "deterministic" and runtime in {"sundial", "side", "sideenv"}:
-        return f"{dataset_name}_sundial_deterministic"
-    return f"{dataset_name}_{mode}_{runtime}"
+        return f"{dataset_name}_sundial_deterministic{ablation_suffix}"
+    return f"{dataset_name}_{mode}_{runtime}{ablation_suffix}"
+
+
+def _parse_max_steps() -> Optional[int]:
+    raw = (os.getenv("CASTMIND_MAX_STEPS") or "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"CASTMIND_MAX_STEPS must be an integer, got {raw!r}") from exc
+    if value < 1:
+        raise ValueError(f"CASTMIND_MAX_STEPS must be >= 1, got {value}")
+    return value
+
+
+def _write_metrics_json(
+    output_dir: str,
+    dataset_name: str,
+    metrics_row: Dict,
+    *,
+    n: int,
+    ablation_id: str = "",
+    ablation_flags: Optional[Dict[str, bool]] = None,
+    max_steps: Optional[int] = None,
+) -> Path:
+    """Persist MSE/MAE/sMAPE next to predictions so auto-archive picks them up."""
+    ds_out = Path(output_dir) / dataset_name
+    ds_out.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "dataset": dataset_name,
+        "MSE": float(metrics_row["MSE"]),
+        "MAE": float(metrics_row["MAE"]),
+        "sMAPE": float(metrics_row["sMAPE"]),
+        "n": int(n),
+        "model": str(metrics_row.get("model", "")),
+        "orchestration_mode": (os.getenv("ORCHESTRATION_MODE") or "llm").strip().lower(),
+        "llm_model": (os.getenv("MODEL") or "").strip() or None,
+        "ablation": ablation_id or None,
+        "max_steps": int(max_steps) if max_steps is not None else None,
+        "ablation_flags": ablation_flags,
+    }
+    path = ds_out / "metrics.json"
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"[info] Wrote {path} (n={payload['n']} MSE={payload['MSE']:.6f} MAE={payload['MAE']:.6f})")
+    return path
 
 
 def archive_dataset_outputs(output_dir: str, dataset_name: str) -> Optional[Path]:
@@ -80,12 +134,26 @@ def _load_dataset_brief(path: Optional[str]) -> str:
     return text.strip()
 
 
-def run_experiment(config_path: str, dataset_selectors: Optional[List[str]] = None) -> None:
+def run_experiment(
+    config_path: str,
+    dataset_selectors: Optional[List[str]] = None,
+    ablation: Optional[str] = None,
+) -> None:
     # Load environment from .env if present
     load_dotenv(override=False)
 
     cfg = load_config(config_path)
     os.makedirs(cfg.output_dir, exist_ok=True)
+
+    env_ablation = (os.getenv("CASTMIND_ABLATION") or "").strip() or None
+    ablation_id = apply_ablation(cfg, ablation or env_ablation)
+    if ablation_id:
+        os.environ["CASTMIND_ABLATION"] = ablation_id
+    flags = ablation_flags_dict(cfg)
+    print(f"[info] ablation_flags={flags}" + (f" ablation={ablation_id}" if ablation_id else " (full)"))
+    max_steps = _parse_max_steps()
+    if max_steps is not None:
+        print(f"[info] CASTMIND_MAX_STEPS={max_steps} (early stop after N windows; not a full eval)")
 
     selectors = [s.strip().lower() for s in (dataset_selectors or []) if s]
     if selectors:
@@ -146,7 +214,17 @@ def run_experiment(config_path: str, dataset_selectors: Optional[List[str]] = No
             train_df = train_df.sort_values(TIME_COL).reset_index(drop=True)
         except Exception as exc:
             print(f"[warn] Failed to load training data for dataset '{ds.name}': {exc}. Using deterministic fallback.")
-            rows.append(deterministic_run_for_dataset(cfg, ds))
+            det_row = deterministic_run_for_dataset(cfg, ds)
+            rows.append(det_row)
+            _write_metrics_json(
+                cfg.output_dir,
+                ds.name,
+                det_row,
+                n=int(det_row.get("n") or 0),
+                ablation_id=ablation_id,
+                ablation_flags=flags,
+                max_steps=max_steps,
+            )
             continue
 
         look_back = int(ds.look_back)
@@ -166,7 +244,17 @@ def run_experiment(config_path: str, dataset_selectors: Optional[List[str]] = No
             )
         except Exception as exc:
             print(f"[warn] Training analysis failed for dataset '{ds.name}': {exc}. Using deterministic fallback.")
-            rows.append(deterministic_run_for_dataset(cfg, ds))
+            det_row = deterministic_run_for_dataset(cfg, ds)
+            rows.append(det_row)
+            _write_metrics_json(
+                cfg.output_dir,
+                ds.name,
+                det_row,
+                n=int(det_row.get("n") or 0),
+                ablation_id=ablation_id,
+                ablation_flags=flags,
+                max_steps=max_steps,
+            )
             continue
 
         ds_out_dir = os.path.join(cfg.output_dir, ds.name)
@@ -388,77 +476,163 @@ def run_experiment(config_path: str, dataset_selectors: Optional[List[str]] = No
 
                 llm_failed = False
                 early_stop_due_to_bounds = False
+                early_stop_max_steps = False
 
                 while current_collected < total_needed:
+                    if max_steps is not None and step_index >= max_steps:
+                        early_stop_max_steps = True
+                        print(
+                            f"[info] Dataset '{ds.name}': CASTMIND_MAX_STEPS={max_steps} reached "
+                            f"after {step_index} window(s); stopping early for ablation smoke."
+                        )
+                        break
+
                     step_horizon = min(horizon, total_needed - current_collected)
                     window_offset = current_len
+                    use_two_stage = bool(getattr(cfg, "two_stage", False))
 
-                    prompt_sections: List[str] = []
-                    if formatted_brief:
-                        prompt_sections.append(formatted_brief)
-                    prompt_sections.append(
-                        dedent(
-                            f"""
-                            You are forecasting the dataset {ds.name} (step {step_index}).
+                    def _build_step_prompt(
+                        *,
+                        stage_horizon: int,
+                        stage_label: str,
+                        prior_half: Optional[List[float]] = None,
+                    ) -> str:
+                        sections: List[str] = []
+                        if formatted_brief:
+                            sections.append(formatted_brief)
+                        two_stage_extra = ""
+                        if use_two_stage and prior_half is None:
+                            two_stage_extra = dedent(
+                                f"""
+                                TWO-STAGE ABLATION (stage 1 of 2): Emit ONLY the first half of the
+                                horizon ({stage_horizon} points). Do not emit the full {step_horizon}-point
+                                forecast in this call. A separate paused turn will generate the remainder.
+                                """
+                            ).strip()
+                        elif use_two_stage and prior_half is not None:
+                            two_stage_extra = dedent(
+                                f"""
+                                TWO-STAGE ABLATION (stage 2 of 2): The previous turn already emitted the
+                                first half ({len(prior_half)} points): {json.dumps(prior_half)}.
+                                Continuity was intentionally interrupted (paper Table 4). Now emit ONLY
+                                the remaining {stage_horizon} points. Call consult with
+                                forecast_horizon={stage_horizon}. When emitting, omit start_timestamp
+                                (or set null) so timestamps continue after the first half already on disk.
+                                """
+                            ).strip()
+                        sections.append(
+                            dedent(
+                                f"""
+                                You are forecasting the dataset {ds.name} (step {step_index}{stage_label}).
 
-                            Step configuration:
-                              - window_offset: {window_offset}
-                              - look_back length: {look_back}
-                              - remaining targets: {total_needed - current_collected}
-                              - forecast horizon for this step: {step_horizon}
+                                Step configuration:
+                                  - window_offset: {window_offset}
+                                  - look_back length: {look_back}
+                                  - remaining targets: {total_needed - current_collected}
+                                  - forecast horizon for this call: {stage_horizon}
 
-                            Required actions:
-                              1. Call tool.consult exactly once with dataset_name={dataset_literal}, window_offset={window_offset}, forecast_horizon={step_horizon} to fetch the InvestigatorAgent packet.
-                              2. Analyse the packet: anchor on `reference_prediction`, compare it to neighbor hints and exogenous trends, and decide whether a careful adjustment is justified. Capture the main signals in a short internal plan.
-                              3. Before emitting predictions, write a brief "Reflection" confirming the prediction list will have length {step_horizon}, that every argument you will pass to tool.emit_predictions (dataset_name, output_dir, predicted_window, window_offset, start_timestamp, selected_features, feature_weights, exogenous selections) is correct, and that the forecast stays consistent with the baseline guidance and exogenous outlook.
-                              4. Log the reasoning by calling tool.record_chain_of_thought exactly once with dataset_name={dataset_literal}, window_offset={window_offset}, and a concise reasoning summary referencing the evidence and any adjustments (or the decision to keep the baseline).
-                              5. Call tool.emit_predictions exactly once with:
-                                   - predictions: a list of {step_horizon} floats,
-                                   - training_csv: {training_literal},
-                                   - predicted_window: {step_horizon},
-                                   - output_dir: {output_literal},
-                                   - dataset_name: {dataset_literal},
-                                   - window_offset: {window_offset},
-                                   - frequency: reuse the 'frequency' field from the context (use null if missing),
-                                   - start_timestamp: reuse 'prediction_start_timestamp' from the context when provided,
-                                   - selected_features: when the Investigator packet already provides `selected_features`, echo that list; otherwise choose ≥3 feature names from the provided dictionary when available (use [] if none),
-                                   - feature_weights: echo Investigator `feature_weights` when present; otherwise non-negative weights for those features that sum to 1.0 (use {{}} if none),
-                                   - exogenous_vars / exogenous_feature_selection / exogenous_correlations: when exogenous context is present, echo the listed variables, pick ≥3 dimension names per variable, and report the provided correlations.
+                                {two_stage_extra}
 
-                            Rules:
-                              - Only use consult, record_chain_of_thought, and emit_predictions.
-                              - Treat this step independently; rely only on the context you just loaded.
-                            """
-                        ).strip()
-                    )
-                    prompt = "\n\n".join(prompt_sections)
+                                Required actions:
+                                  1. Call tool.consult exactly once with dataset_name={dataset_literal}, window_offset={window_offset}, forecast_horizon={stage_horizon} to fetch the InvestigatorAgent packet.
+                                  2. Analyse the packet: anchor on `reference_prediction`, compare it to neighbor hints and exogenous trends, and decide whether a careful adjustment is justified. Capture the main signals in a short internal plan.
+                                  3. Before emitting predictions, write a brief "Reflection" confirming the prediction list will have length {stage_horizon}, that every argument you will pass to tool.emit_predictions (dataset_name, output_dir, predicted_window, window_offset, start_timestamp, selected_features, feature_weights, exogenous selections) is correct, and that the forecast stays consistent with the baseline guidance and exogenous outlook.
+                                  4. Log the reasoning by calling tool.record_chain_of_thought exactly once with dataset_name={dataset_literal}, window_offset={window_offset}, and a concise reasoning summary referencing the evidence and any adjustments (or the decision to keep the baseline).
+                                  5. Call tool.emit_predictions exactly once with:
+                                       - predictions: a list of {stage_horizon} floats,
+                                       - training_csv: {training_literal},
+                                       - predicted_window: {stage_horizon},
+                                       - output_dir: {output_literal},
+                                       - dataset_name: {dataset_literal},
+                                       - window_offset: {window_offset},
+                                       - frequency: reuse the 'frequency' field from the context (use null if missing),
+                                       - start_timestamp: reuse 'prediction_start_timestamp' from the context when provided (stage-2 two_stage: prefer null to continue),
+                                       - selected_features: when the Investigator packet already provides `selected_features`, echo that list; otherwise choose ≥3 feature names from the provided dictionary when available (use [] if none),
+                                       - feature_weights: echo Investigator `feature_weights` when present; otherwise non-negative weights for those features that sum to 1.0 (use {{}} if none),
+                                       - exogenous_vars / exogenous_feature_selection / exogenous_correlations: when exogenous context is present, echo the listed variables, pick ≥3 dimension names per variable, and report the provided correlations.
 
-                    net_failures = 0
-                    other_failures = 0
-                    while True:
-                        try:
-                            agent.run_sync(prompt)
+                                Rules:
+                                  - Only use consult, record_chain_of_thought, and emit_predictions.
+                                  - Treat this step independently; rely only on the context you just loaded.
+                                """
+                            ).strip()
+                        )
+                        return "\n\n".join(s for s in sections if s)
+
+                    def _run_agent_prompt(prompt: str) -> bool:
+                        """Return True on success; set llm_failed/resume_required on hard failure."""
+                        nonlocal llm_failed, resume_required
+                        net_failures = 0
+                        other_failures = 0
+                        while True:
+                            try:
+                                agent.run_sync(prompt)
+                                return True
+                            except Exception as exc:
+                                if _is_network_error(exc) and net_failures < max_net_failures:
+                                    net_failures += 1
+                                    print(
+                                        f"[warn] Network error during LLM call for dataset '{ds.name}' step {step_index} (attempt {net_failures}/{max_net_failures}). Retrying..."
+                                    )
+                                    time.sleep(1.0)
+                                    continue
+                                if not _is_network_error(exc) and other_failures < max_other_failures:
+                                    other_failures += 1
+                                    print(
+                                        f"[warn] LLM call failed for dataset '{ds.name}' step {step_index} (attempt {other_failures}/{max_other_failures}): {exc}. Retrying..."
+                                    )
+                                    time.sleep(1.0)
+                                    continue
+                                print(
+                                    f"[warn] LLM orchestration failed for dataset '{ds.name}' step {step_index}: {exc}. Saving progress for resume."
+                                )
+                                llm_failed = True
+                                resume_required = True
+                                return False
+
+                    if use_two_stage and step_horizon >= 2:
+                        half1 = step_horizon // 2
+                        half2 = step_horizon - half1
+                        print(
+                            f"[info] two_stage ablation: step {step_index} split {step_horizon} -> {half1}+{half2}"
+                        )
+                        if not _run_agent_prompt(
+                            _build_step_prompt(stage_horizon=half1, stage_label=", two_stage=1/2")
+                        ):
                             break
-                        except Exception as exc:
-                            if _is_network_error(exc) and net_failures < max_net_failures:
-                                net_failures += 1
-                                print(
-                                    f"[warn] Network error during LLM call for dataset '{ds.name}' step {step_index} (attempt {net_failures}/{max_net_failures}). Retrying..."
+                        # Read first-half predictions for stage-2 context.
+                        prior_half: List[float] = []
+                        if os.path.exists(out_csv):
+                            try:
+                                _pdf = pd.read_csv(out_csv)
+                                pred_col = next(
+                                    (
+                                        c
+                                        for c in ("predicted_ans", "prediction", "forecast", "value")
+                                        if c in _pdf.columns
+                                    ),
+                                    None,
                                 )
-                                time.sleep(1.0)
-                                continue
-                            if not _is_network_error(exc) and other_failures < max_other_failures:
-                                other_failures += 1
-                                print(
-                                    f"[warn] LLM call failed for dataset '{ds.name}' step {step_index} (attempt {other_failures}/{max_other_failures}): {exc}. Retrying..."
-                                )
-                                time.sleep(1.0)
-                                continue
-                            print(
-                                f"[warn] LLM orchestration failed for dataset '{ds.name}' step {step_index}: {exc}. Saving progress for resume."
+                                if pred_col is not None and len(_pdf) >= half1:
+                                    prior_half = [float(x) for x in _pdf[pred_col].iloc[-half1:].tolist()]
+                            except Exception:
+                                prior_half = []
+                        if not _run_agent_prompt(
+                            _build_step_prompt(
+                                stage_horizon=half2,
+                                stage_label=", two_stage=2/2",
+                                prior_half=prior_half or None,
                             )
-                            llm_failed = True
-                            resume_required = True
+                        ):
+                            break
+                    else:
+                        if use_two_stage and step_horizon < 2:
+                            print(
+                                f"[warn] two_stage requested but horizon={step_horizon}<2; falling back to single emit."
+                            )
+                        if not _run_agent_prompt(
+                            _build_step_prompt(stage_horizon=step_horizon, stage_label="")
+                        ):
                             break
 
                     if llm_failed:
@@ -496,9 +670,13 @@ def run_experiment(config_path: str, dataset_selectors: Optional[List[str]] = No
                         )
                         break
                         
-                    with open(os.path.join(ds_out_dir, "basemodel_results.json"), "r", encoding="utf-8") as f:
-                        basemodel_results = json.load(f) or []
-                        
+                    basemodel_path = os.path.join(ds_out_dir, "basemodel_results.json")
+                    if os.path.exists(basemodel_path):
+                        with open(basemodel_path, "r", encoding="utf-8") as f:
+                            basemodel_results = json.load(f) or []
+                    else:
+                        basemodel_results = []
+
                     new_result = basemodel_results[-1] if basemodel_results else {}
                     if new_result and 'start_timestamp' not in new_result:
                         idx = current_len + look_back
@@ -546,7 +724,11 @@ def run_experiment(config_path: str, dataset_selectors: Optional[List[str]] = No
                         f"[info] Dataset '{ds.name}': collected {current_collected}/{total_needed} predictions via LLM."
                     )
 
-                if not llm_failed and (current_collected >= total_needed or early_stop_due_to_bounds):
+                if not llm_failed and (
+                    current_collected >= total_needed
+                    or early_stop_due_to_bounds
+                    or early_stop_max_steps
+                ):
                     clear_resume_state(ds_out_dir)
                     pred_df_full = pd.read_csv(out_csv)
                     if "time_stamp" in pred_df_full.columns:
@@ -569,14 +751,22 @@ def run_experiment(config_path: str, dataset_selectors: Optional[List[str]] = No
                             f"[warn] Dataset '{ds.name}': predictions file missing 'time_stamp' column during evaluation; attempting best-effort alignment."
                         )
                     y_true, y_pred = align_predictions(target_df, pred_df_full, ds.name)
-                    rows.append(
-                        {
-                            "dataset": ds.name,
-                            "MSE": mse(y_true, y_pred),
-                            "MAE": mae(y_true, y_pred),
-                            "sMAPE": smape(y_true, y_pred),
-                            "model": "LLM",
-                        }
+                    metrics_row = {
+                        "dataset": ds.name,
+                        "MSE": mse(y_true, y_pred),
+                        "MAE": mae(y_true, y_pred),
+                        "sMAPE": smape(y_true, y_pred),
+                        "model": "LLM",
+                    }
+                    rows.append(metrics_row)
+                    _write_metrics_json(
+                        cfg.output_dir,
+                        ds.name,
+                        metrics_row,
+                        n=len(y_true),
+                        ablation_id=ablation_id,
+                        ablation_flags=flags,
+                        max_steps=max_steps,
                     )
                     agent_success = True
 
@@ -656,7 +846,17 @@ def run_experiment(config_path: str, dataset_selectors: Optional[List[str]] = No
         if agent is not None and resume_required:
             continue
 
-        rows.append(deterministic_run_for_dataset(cfg, ds))
+        det_row = deterministic_run_for_dataset(cfg, ds)
+        rows.append(det_row)
+        _write_metrics_json(
+            cfg.output_dir,
+            ds.name,
+            det_row,
+            n=int(det_row.get("n") or 0),
+            ablation_id=ablation_id,
+            ablation_flags=flags,
+            max_steps=max_steps,
+        )
 
     summary = pd.DataFrame(rows)
     print("\n=== Experiment Summary ===")
@@ -693,6 +893,17 @@ if __name__ == "__main__":
         action="store_true",
         help="Run all datasets defined in config (default).",
     )
+    parser.add_argument(
+        "--ablation",
+        type=str,
+        default=None,
+        choices=list(ABLATION_CHOICES),
+        help=(
+            "Ablation variant: toolset off "
+            "(no_feature|no_knowledge|no_case|no_reflect) or reasoning-length "
+            "(two_stage|enhanced_reflect). Default is Full."
+        ),
+    )
 
     args, unknown = parser.parse_known_args()
 
@@ -706,4 +917,8 @@ if __name__ == "__main__":
             else:
                 raise ValueError(f"Unrecognized argument '{token}'. Use --dataset or known aliases.")
 
-    run_experiment(args.config, selector_tokens if selector_tokens else None)
+    run_experiment(
+        args.config,
+        selector_tokens if selector_tokens else None,
+        ablation=args.ablation,
+    )

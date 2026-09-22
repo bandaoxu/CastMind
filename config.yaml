@@ -1,5 +1,12 @@
 output_dir: outputs
 use_features: True
+# Ablation gates (default True = Full). Prefer CLI --ablation over editing these.
+use_knowledge: True
+use_case_library: True
+use_reflector: True
+# Reasoning-length ablations (default False = Full). Prefer CLI --ablation.
+two_stage: False
+enhanced_reflect: False
 # Investigator F_selected (paper Eq. 6 approx): off | rules | paper
 feature_selection: paper
 # Reflector → Investigator feature re-select attempts per window

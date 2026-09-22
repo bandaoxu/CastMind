@@ -29,6 +29,13 @@ class ExperimentConfig:
     output_dir: str = "outputs"
     # New optional fields
     use_features: bool = True
+    # Ablation gates (default True = Full Model; CLI --ablation flips one off)
+    use_knowledge: bool = True
+    use_case_library: bool = True
+    use_reflector: bool = True
+    # Reasoning-length ablations (paper §4.4.2 / §4.4.3); default off = Full continuous path
+    two_stage: bool = False
+    enhanced_reflect: bool = False
     feature_selection_override: Optional[Dict] = None
     # Investigator F_selected: off | rules | paper (LLM + rules fallback)
     feature_selection: str = "paper"
@@ -55,6 +62,11 @@ def load_config(path: str) -> ExperimentConfig:
     output_dir = raw.get("output_dir", "outputs")
     # New fields with defaults
     use_features = bool(raw.get("use_features", True))
+    use_knowledge = bool(raw.get("use_knowledge", True))
+    use_case_library = bool(raw.get("use_case_library", True))
+    use_reflector = bool(raw.get("use_reflector", True))
+    two_stage = bool(raw.get("two_stage", False))
+    enhanced_reflect = bool(raw.get("enhanced_reflect", False))
     feature_selection_override = raw.get("feature_selection_override")
     feature_selection = str(raw.get("feature_selection", "paper") or "paper").strip().lower()
     if feature_selection not in ("off", "rules", "paper"):
@@ -88,9 +100,61 @@ def load_config(path: str) -> ExperimentConfig:
         datasets=datasets,
         output_dir=output_dir,
         use_features=use_features,
+        use_knowledge=use_knowledge,
+        use_case_library=use_case_library,
+        use_reflector=use_reflector,
+        two_stage=two_stage,
+        enhanced_reflect=enhanced_reflect,
         feature_selection_override=feature_selection_override,
         feature_selection=feature_selection,
         feature_reselect_max=feature_reselect_max,
         use_exogenous=use_exogenous,
         sel_model=sel_model,
     )
+
+
+ABLATION_CHOICES = (
+    "no_feature",
+    "no_knowledge",
+    "no_case",
+    "no_reflect",
+    "two_stage",
+    "enhanced_reflect",
+)
+
+
+def apply_ablation(cfg: ExperimentConfig, ablation: Optional[str]) -> str:
+    """Apply one ablation variant. Returns normalized ablation id or ''."""
+    if ablation is None:
+        return ""
+    key = str(ablation).strip().lower()
+    if not key:
+        return ""
+    if key not in ABLATION_CHOICES:
+        raise ValueError(
+            f"Unknown ablation '{ablation}'. Expected one of: {', '.join(ABLATION_CHOICES)}"
+        )
+    if key == "no_feature":
+        cfg.use_features = False
+    elif key == "no_knowledge":
+        cfg.use_knowledge = False
+    elif key == "no_case":
+        cfg.use_case_library = False
+    elif key == "no_reflect":
+        cfg.use_reflector = False
+    elif key == "two_stage":
+        cfg.two_stage = True
+    elif key == "enhanced_reflect":
+        cfg.enhanced_reflect = True
+    return key
+
+
+def ablation_flags_dict(cfg: ExperimentConfig) -> Dict[str, bool]:
+    return {
+        "use_features": bool(getattr(cfg, "use_features", True)),
+        "use_knowledge": bool(getattr(cfg, "use_knowledge", True)),
+        "use_case_library": bool(getattr(cfg, "use_case_library", True)),
+        "use_reflector": bool(getattr(cfg, "use_reflector", True)),
+        "two_stage": bool(getattr(cfg, "two_stage", False)),
+        "enhanced_reflect": bool(getattr(cfg, "enhanced_reflect", False)),
+    }

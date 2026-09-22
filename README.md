@@ -54,6 +54,8 @@ python run_experiment.py
 
 Prefer the project `.venv` (`transformers==4.40.1`) and the copy-paste commands in **[RUNBOOK.md](./RUNBOOK.md)**（含 **§4 十数据集全量跑**）。
 
+多人协作（拉取后建环境、网盘同步、分支与 PR）：**[COLLABORATING.md](./COLLABORATING.md)**。
+
 ```bash
 bash scripts/setup_env.sh
 ORCHESTRATION_MODE=llm bash scripts/run.sh --dataset ETTh1

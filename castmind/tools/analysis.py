@@ -126,25 +126,24 @@ def analyze_training(
         cases_stats.setdefault(best_model, 0)
         cases_stats[best_model] += 1
         cases_neighbors.append(CaseNeighbor(look_back_window=x.tolist(), pred_window=fut.tolist()))
-    
+
     # AlphaCast.pdf §3.3.5: K-means case-library clustering.
     clustered = cluster_by_kmeans(cases, method=method, num_clusters=num_clusters)
     clusters.extend(clustered)
 
-    os.makedirs(os.path.join(output_dir, dataset_name), exist_ok=True)
-    with open(os.path.join(output_dir, dataset_name, "cases_stats.json"), "w", encoding="utf-8") as f:
+    ds_out = os.path.join(output_dir, dataset_name)
+    os.makedirs(ds_out, exist_ok=True)
+    with open(os.path.join(ds_out, "cases_stats.json"), "w", encoding="utf-8") as f:
         json.dump(cases_stats, f, indent=2)
-    with open(os.path.join(output_dir, dataset_name, "memory.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(ds_out, "memory.json"), "w", encoding="utf-8") as f:
         json.dump(memory, f, indent=2)
-    with open(os.path.join(output_dir, dataset_name, "case_base.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(ds_out, "case_base.json"), "w", encoding="utf-8") as f:
         json.dump([c.__dict__ for c in cases], f, indent=2)
-    with open(os.path.join(output_dir, dataset_name, "case_neighbor.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(ds_out, "case_neighbor.json"), "w", encoding="utf-8") as f:
         json.dump([c.__dict__ for c in cases_neighbors], f, indent=2)  
-    with open(os.path.join(output_dir, dataset_name, "cluster_base.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(ds_out, "cluster_base.json"), "w", encoding="utf-8") as f:
         json.dump([c.__dict__ for c in clusters], f, indent=2)
-        
-    print(f"Wrting case base to {os.path.join(output_dir, dataset_name, 'case_base.json')}")
-    print(f"Wrting cluster base to {os.path.join(output_dir, dataset_name, 'cluster_base.json')}")
+
 
     result = AnalyzeResult(memory=memory, case_base=cases, case_neighbors=cases_neighbors)
 

@@ -32,8 +32,9 @@ class ClusterEntry:
 
 @dataclass
 class CaseNeighbor:
-    look_back_window: List[float]  # z-scored L-length vector
+    look_back_window: List[float]  # L-length look-back (raw scale)
     pred_window: List[float]
+
 
 def season_length_from_frequency(freq: Optional[str]) -> Optional[int]:
     """Map dataset frequency to a conventional seasonal period (paper-style)."""
