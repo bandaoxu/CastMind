@@ -31,8 +31,38 @@ from castmind.agents.runtime import (
 )
 from castmind.agents.knowledge import build_context_lookup, build_knowledge_lookup
 from castmind.eval import align_predictions, mae, mse, smape
-from castmind.tools.analysis import analyze_training
+from castmind.tools.analysis import AnalyzeResult, analyze_training
 from castmind.features import extract_target_features, extract_exogenous_features
+
+
+def _env_flag_true(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _case_library_ready(ds_out_dir: str, *, need_feature_case: bool) -> bool:
+    """Return True when on-disk case artifacts look usable (skip re-analyze)."""
+    required = [
+        "memory.json",
+        "case_base.json",
+        "case_neighbor.json",
+        "cluster_base.json",
+    ]
+    if need_feature_case:
+        required.extend(["case_feature_neighbor.json", "case_feature_scaler.json"])
+    for name in required:
+        path = os.path.join(ds_out_dir, name)
+        if not os.path.isfile(path) or os.path.getsize(path) <= 2:
+            return False
+    return True
+
+
+def _load_cached_analysis(ds_out_dir: str) -> AnalyzeResult:
+    memory_path = os.path.join(ds_out_dir, "memory.json")
+    with open(memory_path, "r", encoding="utf-8") as f:
+        memory = json.load(f)
+    if not isinstance(memory, dict):
+        memory = {}
+    return AnalyzeResult(memory=memory, case_base=[], case_neighbors=[])
 
 
 def _archive_tag(dataset_name: str) -> str:
@@ -229,19 +259,32 @@ def run_experiment(
 
         look_back = int(ds.look_back)
         predicted_window = int(ds.predicted_window)
+        ds_out_dir = os.path.join(cfg.output_dir, ds.name)
+        need_feature_case = bool(getattr(cfg, "use_feature_case_library", False))
+        force_analyze = _env_flag_true("CASTMIND_FORCE_ANALYZE")
+        skip_analyze = _env_flag_true("CASTMIND_SKIP_ANALYZE") or (
+            not force_analyze and _case_library_ready(ds_out_dir, need_feature_case=need_feature_case)
+        )
 
         try:
-            analysis = analyze_training(
-                train_df,
-                look_back,
-                predicted_window,
-                cfg.output_dir,
-                ds.name,
-                ds.sliding_window,
-                method="weighted",
-                num_clusters=6,
-                dataset_cfg=ds,
-            )
+            if skip_analyze:
+                print(
+                    f"[info] Skipping analyze_training for '{ds.name}' "
+                    f"(case library on disk; set CASTMIND_FORCE_ANALYZE=1 to rebuild)."
+                )
+                analysis = _load_cached_analysis(ds_out_dir)
+            else:
+                analysis = analyze_training(
+                    train_df,
+                    look_back,
+                    predicted_window,
+                    cfg.output_dir,
+                    ds.name,
+                    ds.sliding_window,
+                    method="weighted",
+                    num_clusters=6,
+                    dataset_cfg=ds,
+                )
         except Exception as exc:
             print(f"[warn] Training analysis failed for dataset '{ds.name}': {exc}. Using deterministic fallback.")
             det_row = deterministic_run_for_dataset(cfg, ds)
@@ -257,7 +300,6 @@ def run_experiment(
             )
             continue
 
-        ds_out_dir = os.path.join(cfg.output_dir, ds.name)
         frequency = None
         if isinstance(analysis.memory, dict):
             frequency = analysis.memory.get("frequency")

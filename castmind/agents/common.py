@@ -21,6 +21,7 @@ from castmind.features.select import select_features_for_mode
 from castmind.tools.analysis import (
     analyze_training,
     choose_cluster_by_similarity,
+    choose_feature_neighbors_topk,
     choose_model_by_similarity,
     choose_neighbor_by_similarity,
 )
@@ -29,6 +30,7 @@ from castmind.utils.time import (
     CaseEntry,
     CaseNeighbor,
     ClusterEntry,
+    FeatureCaseNeighbor,
     generate_future_timestamps,
 )
 
@@ -99,6 +101,12 @@ def prepare_investor_packet(
     case_base_raw = _read_json("case_base.json") or []
     case_neighbor_raw = _read_json("case_neighbor.json") or []
     cluster_base_raw = _read_json("cluster_base.json") or []
+    case_feature_neighbor_raw = _read_json("case_feature_neighbor.json") or []
+    case_feature_scaler = _read_json("case_feature_scaler.json") or {}
+    if not isinstance(case_feature_neighbor_raw, list):
+        case_feature_neighbor_raw = []
+    if not isinstance(case_feature_scaler, dict):
+        case_feature_scaler = {}
 
     train_df = pd.read_csv(ds_cfg.training_csv)
     train_df[TIME_COL] = pd.to_datetime(train_df[TIME_COL])
@@ -286,6 +294,117 @@ def prepare_investor_packet(
         except Exception:
             neighbor_lookback = None
             neighbor_pred = None
+
+    # Feature-vector case library (parallel evidence; gated by use_case_library + use_feature_case_library).
+    feature_neighbor_lookback = None
+    feature_neighbor_pred = None
+    feature_neighbor_distance = None
+    feature_neighbor_model_weights = None
+    reference_prediction_feature = None
+    use_feature_case = bool(getattr(cfg, "use_feature_case_library", False) if cfg is not None else False)
+    if effective_case and use_feature_case and case_feature_neighbor_raw and case_feature_scaler:
+        try:
+            feature_cases: List[FeatureCaseNeighbor] = []
+            for c in case_feature_neighbor_raw:
+                if not isinstance(c, dict):
+                    continue
+                lb = c.get("look_back_window") or []
+                pw = c.get("pred_window") or []
+                norm = c.get("feature_vector_norm") or []
+                if not lb or not pw or not norm:
+                    continue
+                raw_fv = c.get("feature_vector_raw") or {}
+                if not isinstance(raw_fv, dict):
+                    raw_fv = {}
+                feature_cases.append(
+                    FeatureCaseNeighbor(
+                        look_back_window=list(lb),
+                        pred_window=list(pw),
+                        feature_vector_raw={str(k): float(v) for k, v in raw_fv.items()},
+                        feature_vector_norm=[float(v) for v in norm],
+                        best_model=str(c.get("best_model") or ""),
+                    )
+                )
+            if feature_cases:
+                top_k = int(getattr(cfg, "feature_neighbor_top_k", 5) if cfg is not None else 5)
+                top_k = max(1, top_k)
+                query_features = features if isinstance(features, dict) else {}
+                feature_neighbors_topk = choose_feature_neighbors_topk(
+                    feature_cases,
+                    query_features,
+                    case_feature_scaler,
+                    k=top_k,
+                )
+                if feature_neighbors_topk:
+                    best_feature_case, best_feature_dist = feature_neighbors_topk[0]
+                    feature_neighbor_lookback = list(best_feature_case.look_back_window)
+                    feature_neighbor_pred = list(best_feature_case.pred_window)
+                    feature_neighbor_distance = float(best_feature_dist)
+
+                    distances = np.asarray([d for _, d in feature_neighbors_topk], dtype=float)
+                    case_weights: Optional[np.ndarray] = None
+                    if distances.size and np.all(np.isfinite(distances)):
+                        logits = -distances
+                        logits = logits - float(np.max(logits))
+                        exp_w = np.exp(logits)
+                        denom = float(np.sum(exp_w))
+                        if denom > 0 and np.isfinite(denom):
+                            case_weights = exp_w / denom
+                    if case_weights is None:
+                        # Fallback: equal vote over neighbors with a best_model.
+                        models = [c.best_model for c, _ in feature_neighbors_topk if c.best_model]
+                        if models:
+                            counts: Dict[str, float] = {}
+                            for m in models:
+                                counts[m] = counts.get(m, 0.0) + 1.0
+                            total = float(sum(counts.values())) or 1.0
+                            feature_neighbor_model_weights = {
+                                m: float(v) / total for m, v in counts.items()
+                            }
+                    else:
+                        weights: Dict[str, float] = {}
+                        for (case, _), w in zip(feature_neighbors_topk, case_weights):
+                            if not case.best_model:
+                                continue
+                            weights[case.best_model] = weights.get(case.best_model, 0.0) + float(w)
+                        total_w = float(sum(weights.values()))
+                        if total_w > 0:
+                            feature_neighbor_model_weights = {
+                                m: float(v) / total_w for m, v in weights.items()
+                            }
+                        else:
+                            feature_neighbor_model_weights = None
+
+                    do_aux = bool(
+                        getattr(cfg, "feature_neighbor_auxiliary", True) if cfg is not None else True
+                    )
+                    if do_aux and feature_neighbor_model_weights:
+                        weighted: Optional[List[float]] = None
+                        for model_name, weight in feature_neighbor_model_weights.items():
+                            if weight <= 0:
+                                continue
+                            try:
+                                model_pred = forecast_with_model(
+                                    model_name,
+                                    np.asarray(window_vals, dtype=float),
+                                    int(ref_horizon),
+                                    season_length=season_length,
+                                    dataset=ds_cfg,
+                                    timestamps=window_ts,
+                                ).tolist()
+                            except Exception:
+                                continue
+                            if weighted is None:
+                                weighted = [0.0] * int(ref_horizon)
+                            for i in range(int(ref_horizon)):
+                                weighted[i] = weighted[i] + float(weight) * float(model_pred[i])
+                        reference_prediction_feature = weighted
+        except Exception:
+            feature_neighbor_lookback = None
+            feature_neighbor_pred = None
+            feature_neighbor_distance = None
+            feature_neighbor_model_weights = None
+            reference_prediction_feature = None
 
     def _sanitize_exo_key(name: str) -> str:
         cleaned = re.sub(r"[^a-z0-9]+", "_", str(name).strip().lower())
@@ -619,6 +738,9 @@ def prepare_investor_packet(
             "use_reflector": bool(getattr(cfg, "use_reflector", True) if cfg is not None else True),
             "two_stage": bool(getattr(cfg, "two_stage", False) if cfg is not None else False),
             "enhanced_reflect": bool(getattr(cfg, "enhanced_reflect", False) if cfg is not None else False),
+            "use_feature_case_library": bool(
+                getattr(cfg, "use_feature_case_library", False) if cfg is not None else False
+            ),
         },
         "exogenous_features": exo_features,
         "exogenous_correlations": exo_corr,
@@ -640,6 +762,18 @@ def prepare_investor_packet(
         "neighbor_pred": neighbor_pred,
         "X_auxiliary": reference_prediction,
         "X_neighbor": {"look_back": neighbor_lookback, "pred": neighbor_pred},
+        "feature_neighbor_lookback": feature_neighbor_lookback,
+        "feature_neighbor_pred": feature_neighbor_pred,
+        "feature_neighbor_distance": feature_neighbor_distance,
+        "feature_neighbor_model_weights": feature_neighbor_model_weights,
+        "reference_prediction_feature": reference_prediction_feature,
+        "X_auxiliary_feature": reference_prediction_feature,
+        "X_neighbor_feature": {
+            "look_back": feature_neighbor_lookback,
+            "pred": feature_neighbor_pred,
+            "distance": feature_neighbor_distance,
+        },
+        "case_feature_neighbor_size": len(case_feature_neighbor_raw),
     }
 
 

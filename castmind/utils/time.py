@@ -36,6 +36,15 @@ class CaseNeighbor:
     pred_window: List[float]
 
 
+@dataclass
+class FeatureCaseNeighbor:
+    look_back_window: List[float]
+    pred_window: List[float]
+    feature_vector_raw: Dict[str, float]
+    feature_vector_norm: List[float]
+    best_model: str
+
+
 def season_length_from_frequency(freq: Optional[str]) -> Optional[int]:
     """Map dataset frequency to a conventional seasonal period (paper-style)."""
     if freq is None:

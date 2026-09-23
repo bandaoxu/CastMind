@@ -44,6 +44,11 @@ class ExperimentConfig:
     # Exogenous variable processing switch
     use_exogenous: bool = False
     sel_model: Optional[str] = None
+    # Feature-vector case library (incremental; default off = Full).
+    # Enable via --ablation feature_case (same pattern as two_stage).
+    use_feature_case_library: bool = False
+    feature_neighbor_top_k: int = 5
+    feature_neighbor_auxiliary: bool = True
 
 
 def load_config(path: str) -> ExperimentConfig:
@@ -77,6 +82,13 @@ def load_config(path: str) -> ExperimentConfig:
         feature_reselect_max = 3
     feature_reselect_max = max(0, feature_reselect_max)
     use_exogenous = bool(raw.get("use_exogenous", False))
+    use_feature_case_library = bool(raw.get("use_feature_case_library", False))
+    try:
+        feature_neighbor_top_k = int(raw.get("feature_neighbor_top_k", 5))
+    except Exception:
+        feature_neighbor_top_k = 5
+    feature_neighbor_top_k = max(1, feature_neighbor_top_k)
+    feature_neighbor_auxiliary = bool(raw.get("feature_neighbor_auxiliary", True))
     sel_model_raw = raw.get("SEL_MODEL")
     sel_model = None
     if sel_model_raw is not None:
@@ -110,6 +122,9 @@ def load_config(path: str) -> ExperimentConfig:
         feature_reselect_max=feature_reselect_max,
         use_exogenous=use_exogenous,
         sel_model=sel_model,
+        use_feature_case_library=use_feature_case_library,
+        feature_neighbor_top_k=feature_neighbor_top_k,
+        feature_neighbor_auxiliary=feature_neighbor_auxiliary,
     )
 
 
@@ -120,6 +135,7 @@ ABLATION_CHOICES = (
     "no_reflect",
     "two_stage",
     "enhanced_reflect",
+    "feature_case",
 )
 
 
@@ -146,6 +162,8 @@ def apply_ablation(cfg: ExperimentConfig, ablation: Optional[str]) -> str:
         cfg.two_stage = True
     elif key == "enhanced_reflect":
         cfg.enhanced_reflect = True
+    elif key == "feature_case":
+        cfg.use_feature_case_library = True
     return key
 
 
@@ -157,4 +175,5 @@ def ablation_flags_dict(cfg: ExperimentConfig) -> Dict[str, bool]:
         "use_reflector": bool(getattr(cfg, "use_reflector", True)),
         "two_stage": bool(getattr(cfg, "two_stage", False)),
         "enhanced_reflect": bool(getattr(cfg, "enhanced_reflect", False)),
+        "use_feature_case_library": bool(getattr(cfg, "use_feature_case_library", False)),
     }

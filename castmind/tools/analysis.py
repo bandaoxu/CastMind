@@ -21,8 +21,127 @@ from ..utils.time import (
     CaseEntry,
     ClusterEntry,
     CaseNeighbor,
+    FeatureCaseNeighbor,
     resolve_season_length,
 )
+from ..features import extract_target_features
+
+FEATURE_VECTOR_KEYS = [
+    "basic_count",
+    "basic_mean",
+    "basic_std",
+    "basic_min",
+    "basic_max",
+    "basic_skew",
+    "basic_kurt",
+    "spectral_entropy",
+    "crossing_points",
+    "flat_spots",
+    "lumpiness",
+    "entropy",
+    "x_acf1",
+    "x_acf10",
+    "diff1_acf1",
+    "diff1_acf10",
+    "diff2_acf1",
+    "diff2_acf10",
+    "seas_acf1",
+    "seasonal_strength",
+]
+
+
+def feature_dict_to_vector(
+    features: Dict,
+    keys: Optional[List[str]] = None,
+) -> np.ndarray:
+    key_list = keys or FEATURE_VECTOR_KEYS
+    vals: List[float] = []
+    for k in key_list:
+        v = features.get(k, 0.0) if isinstance(features, dict) else 0.0
+        try:
+            f = float(v)
+        except Exception:
+            f = 0.0
+        if not np.isfinite(f):
+            f = 0.0
+        vals.append(f)
+    return np.asarray(vals, dtype=float)
+
+
+def fit_feature_scaler(vectors: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    if vectors.size == 0:
+        n = len(FEATURE_VECTOR_KEYS)
+        return np.zeros(n, dtype=float), np.ones(n, dtype=float)
+    mean = np.nanmean(vectors, axis=0)
+    std = np.nanstd(vectors, axis=0)
+    mean = np.where(np.isfinite(mean), mean, 0.0)
+    std = np.where((np.isfinite(std)) & (std > 1e-8), std, 1.0)
+    return mean.astype(float), std.astype(float)
+
+
+def transform_feature_vector(
+    vector: np.ndarray,
+    mean: np.ndarray,
+    std: np.ndarray,
+) -> np.ndarray:
+    out = (np.asarray(vector, dtype=float) - mean) / std
+    out = np.where(np.isfinite(out), out, 0.0)
+    return out.astype(float)
+
+
+def _scaler_arrays(scaler: Dict) -> Tuple[np.ndarray, np.ndarray]:
+    mean = np.asarray(scaler.get("mean") or [], dtype=float)
+    std = np.asarray(scaler.get("std") or [], dtype=float)
+    n = len(FEATURE_VECTOR_KEYS)
+    if mean.size != n:
+        mean = np.zeros(n, dtype=float)
+    if std.size != n:
+        std = np.ones(n, dtype=float)
+    std = np.where((np.isfinite(std)) & (std > 1e-8), std, 1.0)
+    mean = np.where(np.isfinite(mean), mean, 0.0)
+    return mean, std
+
+
+def choose_feature_neighbors_topk(
+    cases: List[FeatureCaseNeighbor],
+    current_features: Dict,
+    scaler: Dict,
+    k: int = 5,
+) -> List[Tuple[FeatureCaseNeighbor, float]]:
+    if not cases or k <= 0:
+        return []
+    mean, std = _scaler_arrays(scaler if isinstance(scaler, dict) else {})
+    raw = feature_dict_to_vector(current_features)
+    cur = transform_feature_vector(raw, mean, std)
+    scored: List[Tuple[FeatureCaseNeighbor, float]] = []
+    for case in cases:
+        vec = np.asarray(case.feature_vector_norm, dtype=float)
+        if vec.size != cur.size:
+            continue
+        dist = float(np.linalg.norm(cur - vec))
+        if not np.isfinite(dist):
+            continue
+        scored.append((case, dist))
+    scored.sort(key=lambda t: t[1])
+    return scored[: int(k)]
+
+
+def choose_feature_neighbor_by_similarity(
+    cases: List[FeatureCaseNeighbor],
+    current_features: Dict,
+    scaler: Dict,
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], float, Optional[FeatureCaseNeighbor]]:
+    top = choose_feature_neighbors_topk(cases, current_features, scaler, k=1)
+    if not top:
+        return None, None, float("inf"), None
+    case, dist = top[0]
+    return (
+        np.asarray(case.look_back_window, dtype=float),
+        np.asarray(case.pred_window, dtype=float),
+        float(dist),
+        case,
+    )
+
 
 @dataclass
 class AnalyzeResult:
@@ -118,6 +237,8 @@ def analyze_training(
     clusters: List[CaseEntry] = []
     
     cases_stats : Dict[str, int] = {}
+    feature_case_temp: List[Dict] = []
+    feature_vectors_raw: List[np.ndarray] = []
     
     for x, fut, ts_x, ts_fut in sliding_windows(y, ts_all, L, H, step=stride):
         if len(x) < L or len(fut) < H: continue
@@ -127,6 +248,30 @@ def analyze_training(
         cases_stats[best_model] += 1
         cases_neighbors.append(CaseNeighbor(look_back_window=x.tolist(), pred_window=fut.tolist()))
 
+        # Feature-vector case library (incremental; does not replace raw neighbor).
+        try:
+            window_features = extract_target_features(
+                np.asarray(x, dtype=float),
+                memory.get("frequency") if isinstance(memory, dict) else None,
+            )
+            if not isinstance(window_features, dict):
+                window_features = {}
+        except Exception as exc:
+            print(f"[warn] Feature extraction failed for a training window: {exc}")
+            window_features = {}
+        raw_vec = feature_dict_to_vector(window_features)
+        feature_vectors_raw.append(raw_vec)
+        feature_case_temp.append(
+            {
+                "look_back_window": x.tolist(),
+                "pred_window": fut.tolist(),
+                "feature_vector_raw": {
+                    k: float(raw_vec[i]) for i, k in enumerate(FEATURE_VECTOR_KEYS)
+                },
+                "best_model": best_model,
+            }
+        )
+    
     # AlphaCast.pdf §3.3.5: K-means case-library clustering.
     clustered = cluster_by_kmeans(cases, method=method, num_clusters=num_clusters)
     clusters.extend(clustered)
@@ -144,6 +289,33 @@ def analyze_training(
     with open(os.path.join(ds_out, "cluster_base.json"), "w", encoding="utf-8") as f:
         json.dump([c.__dict__ for c in clusters], f, indent=2)
 
+    # Fit feature scaler on train windows and persist feature-neighbor library.
+    if feature_vectors_raw:
+        feature_matrix = np.vstack(feature_vectors_raw)
+    else:
+        feature_matrix = np.empty((0, len(FEATURE_VECTOR_KEYS)), dtype=float)
+    mean, std = fit_feature_scaler(feature_matrix)
+    feature_cases_out: List[Dict] = []
+    for item, raw_vec in zip(feature_case_temp, feature_vectors_raw):
+        norm_vec = transform_feature_vector(raw_vec, mean, std)
+        feature_cases_out.append({**item, "feature_vector_norm": norm_vec.tolist()})
+    with open(os.path.join(ds_out, "case_feature_neighbor.json"), "w", encoding="utf-8") as f:
+        json.dump(feature_cases_out, f, indent=2)
+    with open(os.path.join(ds_out, "case_feature_scaler.json"), "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "feature_keys": list(FEATURE_VECTOR_KEYS),
+                "mean": mean.tolist(),
+                "std": std.tolist(),
+                "method": "zscore_train_windows",
+            },
+            f,
+            indent=2,
+        )
+        
+    print(f"Wrting case base to {os.path.join(ds_out, 'case_base.json')}")
+    print(f"Wrting cluster base to {os.path.join(ds_out, 'cluster_base.json')}")
+    print(f"Writing feature case neighbor to {os.path.join(ds_out, 'case_feature_neighbor.json')}")
 
     result = AnalyzeResult(memory=memory, case_base=cases, case_neighbors=cases_neighbors)
 

@@ -131,9 +131,10 @@ ORCHESTRATION_MODE=llm bash scripts/run.sh --dataset <ds>
 ```
 
 - 中断 / Reflector 拒收 / 网络错误：会写 `outputs/<ds>/llm_resume_state.json`，**同命令重跑即可续跑**；未完整结束时 Experiment Summary 可能为空、**不会自动归档**，且进程 **exit 1**（`for … || break` 会停在该套）。
+- **续跑跳过训练分析：** 若 `outputs/<ds>/` 已有 `case_base.json` / `case_neighbor.json` / `cluster_base.json` / `memory.json`（`feature_case` 时还要有 `case_feature_*.json`），默认**不再**重跑 `analyze_training`，直接续 LLM。强制重建：`CASTMIND_FORCE_ANALYZE=1`；也可显式 `CASTMIND_SKIP_ANALYZE=1`。
 - 完整结束后：`outputs/_archive/<ds>_llm_<MODEL>/`（含 `predictions.csv`）。
 - Reflector 默认仍是 **LLM**（论文路径）：工具 `deterministic_audit` 提供证据，**由 LLM 决定** `approved`。工具审计使用 Generator 绑定的**完整** Investigator packet（避免 LLM 缩水参数导致外生负荷/风电被误判无依据）。拒收后特征重选走 `prepare_investor_packet`。勿默认开 `CASTMIND_RULES_REFLECTOR=1`。
-- **消融门闩：** `--ablation no_feature|no_knowledge|no_case|no_reflect|two_stage|enhanced_reflect`。前四项关掉对应工具/反思；后两项为「更长推理」类（§4.4）。`CASTMIND_RULES_REFLECTOR` **不是** `no_reflect`。冒烟可用 `CASTMIND_MAX_STEPS=5`（不定稿）。
+- **消融门闩：** `--ablation no_feature|no_knowledge|no_case|no_reflect|two_stage|enhanced_reflect|feature_case`。前四项关掉对应工具/反思；`two_stage` / `enhanced_reflect` 为「更长推理」类（§4.4）；`feature_case` 打开特征向量案例库（默认 Full 关闭，与 `two_stage` 同模式）。`CASTMIND_RULES_REFLECTOR` **不是** `no_reflect`。冒烟可用 `CASTMIND_MAX_STEPS=5`（不定稿）。
 - **补写旧跑指标：** `.venv/bin/python scripts/backfill_metrics.py`（可选 `--working` / `--force`）；从已有 `predictions.csv` 生成 `metrics.json`，不重跑 LLM。
 - **EPF（短序）：** `look_back=168`、`predicted_window=24`、`sliding_window=24`（day-ahead，与长序「stride=horizon」一致）。约 **2856** 点满测；旧配置 stride=168 只评 ~408 点，**已废弃**，勿再当论文对照。
 - **长序**（ETTh1 / ETTm1 / MOPEX 等）：`sliding_window=96`，可接近满覆盖（如 ETTh1/MOPEX 2448 点；ETTm1 约 4800 点）。
@@ -183,6 +184,20 @@ CASTMIND_MAX_STEPS=2 ORCHESTRATION_MODE=llm MODEL=deepseek-chat \
 
 验收：归档 `metrics.json` 中 **n=2448**；与 Full 比 MSE/MAE。论文预期这两臂往往**更差**（「更多推理≠更好」）。  
 披露：`deepseek-chat` ≠ GPT-5；ETTh1 ≠ 论文 Table 4 的 BE/PJM/Windy。
+
+#### 4.0.3 特征向量案例库（创新臂；默认 Full 关闭）
+
+默认 `use_feature_case_library: false` → 无消融满测 = 旧完整模型（raw case 仍开）。  
+`--ablation feature_case` 打开 20 维特征近邻 + 距离加权辅助预测；归档自动带后缀 `_feature_case`。
+
+```bash
+# 创新满测（归档 ETTh1_llm_deepseekchat_feature_case；不覆盖 Full 基线）
+rm -f outputs/ETTh1/llm_resume_state.json
+ORCHESTRATION_MODE=llm MODEL=deepseek-chat \
+  bash scripts/run.sh --dataset ETTh1 --ablation feature_case
+```
+
+验收：`outputs/ETTh1/case_feature_neighbor.json` / `case_feature_scaler.json` 存在；归档 `metrics.json` 中 **n=2448**、`ablation: feature_case`；与 `outputs/_archive/ETTh1_llm_deepseekchat` 比 MSE/MAE。
 
 ### 4.1 进度快照（2026-09-13）
 
