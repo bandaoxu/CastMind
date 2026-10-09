@@ -45,6 +45,11 @@ class ExperimentConfig:
     use_exogenous: bool = False
     sel_model: Optional[str] = None
 
+    run_name: Optional[str] = None
+    resume: bool = False
+    run_dirs: Dict[str, str] = field(default_factory=dict)
+    case_library_dirs: Dict[str, str] = field(default_factory=dict)
+
 
 def load_config(path: str) -> ExperimentConfig:
     with open(path, "r", encoding="utf-8") as f:

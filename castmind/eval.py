@@ -49,12 +49,46 @@ def align_predictions(
     preds_df = pred_df.copy()
     preds_df["time_stamp"] = pd.to_datetime(preds_df["time_stamp"])
 
+    # Keep only final rows when the column is present (emissions may mark superseded).
+    if "is_final" in preds_df.columns:
+        final_mask = preds_df["is_final"].astype(str).str.lower().isin({"1", "true", "yes"}) | (
+            preds_df["is_final"] == True  # noqa: E712
+        )
+        # Also keep rows where is_final is missing/NaN (legacy CSVs).
+        na_mask = preds_df["is_final"].isna()
+        preds_df = preds_df.loc[final_mask | na_mask].copy()
+
     # Coalesce alternate forecast columns (e.g. mixed LLM `prediction` + deterministic
     # `predicted_ans` after a dirty resume) so mixed CSVs still evaluate.
     coalesced = pd.to_numeric(preds_df[present_pred_cols[0]], errors="coerce")
     for col in present_pred_cols[1:]:
         coalesced = coalesced.fillna(pd.to_numeric(preds_df[col], errors="coerce"))
     preds_df["_pred_value"] = coalesced
+
+    # Hard-fail on duplicate final predictions for the same timestamp / window cell.
+    valid_ts = preds_df["time_stamp"].notna()
+    if valid_ts.any():
+        ts_counts = preds_df.loc[valid_ts, "time_stamp"].value_counts()
+        dup_ts = ts_counts[ts_counts > 1]
+        if len(dup_ts) > 0:
+            sample = ", ".join(str(t) for t in dup_ts.index[:5])
+            raise ValueError(
+                f"Duplicate final predictions for {len(dup_ts)} timestamp(s) "
+                f"(e.g. {sample}). Refusing silent drop_duplicates scoring."
+            )
+    if {"window_offset", "horizon_index"}.issubset(preds_df.columns):
+        key_df = preds_df.copy()
+        key_df["_wo"] = pd.to_numeric(key_df["window_offset"], errors="coerce")
+        key_df["_hi"] = pd.to_numeric(key_df["horizon_index"], errors="coerce")
+        key_df = key_df.dropna(subset=["_wo", "_hi"])
+        if len(key_df) > 0:
+            keyed = key_df.groupby(["_wo", "_hi"], dropna=False).size()
+            dup_keys = keyed[keyed > 1]
+            if len(dup_keys) > 0:
+                raise ValueError(
+                    f"Duplicate final predictions for {len(dup_keys)} "
+                    f"(window_offset, horizon_index) cell(s). Refusing silent dedupe."
+                )
 
     if "emission_index" in preds_df.columns:
         order_values = pd.to_numeric(preds_df["emission_index"], errors="coerce")

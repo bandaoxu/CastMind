@@ -78,3 +78,11 @@ castagent/foundation_models/
 
 # Python version managers
 .python-version
+
+# Local worktrees, migration snapshots, thesis materials and agent rules
+/.worktrees/
+/alphacast_rework_work/
+/毕业论文
+/thesis/
+/AGENTS.md
+/.cursor/rules/thesis-records.mdc

@@ -75,31 +75,45 @@ def prepare_investor_packet(
     """
 
     dataset_name = ds_cfg.name
-    ds_out_dir = os.path.join(cfg.output_dir, dataset_name) if cfg else os.path.join("outputs", dataset_name)
+    from castmind.run_layout import get_case_library_dir, get_run_dir
+
+    case_lib_dir = get_case_library_dir(cfg, dataset_name)
+    run_dir = get_run_dir(cfg, dataset_name)
     use_knowledge = getattr(cfg, "use_knowledge", True) if cfg is not None else True
     use_case_library = getattr(cfg, "use_case_library", True) if cfg is not None else True
     effective_case = bool(include_case_evidence) and bool(use_case_library)
     effective_knowledge_lookup = knowledge_lookup if use_knowledge else None
 
-    def _read_json(filename: str):
-        path = os.path.join(ds_out_dir, filename)
-        if not os.path.exists(path):
-            return None
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+    def _read_json(filename: str, *, prefer_case: bool = True):
+        # Case-library artifacts first; fall back to run dir (legacy / per-run copies).
+        candidates = []
+        if prefer_case:
+            candidates.append(os.path.join(case_lib_dir, filename))
+            candidates.append(os.path.join(run_dir, filename))
+        else:
+            candidates.append(os.path.join(run_dir, filename))
+            candidates.append(os.path.join(case_lib_dir, filename))
+        for path in candidates:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        return None
 
-    basemodel_results = _read_json("basemodel_results.json") or []
+    basemodel_results = _read_json("basemodel_results.json", prefer_case=False) or []
+    if not isinstance(basemodel_results, list):
+        basemodel_results = []
 
     memory = _read_json("memory.json") or {}
-    features = _read_json("features.json") or {}
-    exo_features = _read_json("exogenous_features.json") or {}
-    exo_corr = _read_json("exogenous_correlations.json") or {}
-    exo_top3 = _read_json("exogenous_top3.json") or []
-    exo_columns_meta = _read_json("exogenous_columns.json") or {}
+    features = _read_json("features.json", prefer_case=False) or {}
+    exo_features = _read_json("exogenous_features.json", prefer_case=False) or {}
+    exo_corr = _read_json("exogenous_correlations.json", prefer_case=False) or {}
+    exo_top3 = _read_json("exogenous_top3.json", prefer_case=False) or []
+    exo_columns_meta = _read_json("exogenous_columns.json", prefer_case=False) or {}
     case_base_raw = _read_json("case_base.json") or []
     case_neighbor_raw = _read_json("case_neighbor.json") or []
     cluster_base_raw = _read_json("cluster_base.json") or []
 
+    ds_out_dir = run_dir
     train_df = pd.read_csv(ds_cfg.training_csv)
     train_df[TIME_COL] = pd.to_datetime(train_df[TIME_COL])
     train_df = train_df.sort_values(TIME_COL).reset_index(drop=True)
@@ -688,24 +702,34 @@ def assess_forecast(
 
 
 def deterministic_run_for_dataset(cfg: ExperimentConfig, ds) -> dict:
+    from castmind.run_layout import get_case_library_dir, get_run_dir
+
     # Load training data
     data = pd.read_csv(ds.training_csv)
     data[TIME_COL] = pd.to_datetime(data[TIME_COL])
     data = data.sort_values(TIME_COL).reset_index(drop=True)
 
-    _ = analyze_training(
-        data,
-        ds.look_back,
-        ds.predicted_window,
-        cfg.output_dir,
-        ds.name,
-        ds.sliding_window,
-        dataset_cfg=ds,
-    )
-    ds_out_dir = os.path.join(cfg.output_dir, ds.name)
-    memory_path = os.path.join(ds_out_dir, "memory.json")
-    case_base_path = os.path.join(ds_out_dir, "case_base.json")
-    case_neighbor_path = os.path.join(ds_out_dir, "case_neighbor.json")
+    case_lib_dir = get_case_library_dir(cfg, ds.name)
+    run_dir = get_run_dir(cfg, ds.name)
+    os.makedirs(case_lib_dir, exist_ok=True)
+    os.makedirs(run_dir, exist_ok=True)
+
+    from castmind.run_layout import case_library_ready
+    if not case_library_ready(case_lib_dir):
+        _ = analyze_training(
+            data,
+            ds.look_back,
+            ds.predicted_window,
+            cfg.output_dir,
+            ds.name,
+            ds.sliding_window,
+            dataset_cfg=ds,
+            case_out_dir=case_lib_dir,
+        )
+    ds_out_dir = run_dir
+    memory_path = os.path.join(case_lib_dir, "memory.json")
+    case_base_path = os.path.join(case_lib_dir, "case_base.json")
+    case_neighbor_path = os.path.join(case_lib_dir, "case_neighbor.json")
     with open(memory_path, "r", encoding="utf-8") as f:
         memory = json.load(f)
 

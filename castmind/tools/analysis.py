@@ -83,6 +83,7 @@ def analyze_training(
     method: str = "weighted",
     num_clusters: Optional[int] = 6,
     dataset_cfg: Optional[DatasetConfig] = None,
+    case_out_dir: Optional[str] = None,
 ) -> AnalyzeResult:
     target_col = infer_target_column(train_df, dataset_name)
     y = train_df[target_col].to_numpy(dtype=float)
@@ -131,7 +132,7 @@ def analyze_training(
     clustered = cluster_by_kmeans(cases, method=method, num_clusters=num_clusters)
     clusters.extend(clustered)
 
-    ds_out = os.path.join(output_dir, dataset_name)
+    ds_out = case_out_dir or os.path.join(output_dir, dataset_name)
     os.makedirs(ds_out, exist_ok=True)
     with open(os.path.join(ds_out, "cases_stats.json"), "w", encoding="utf-8") as f:
         json.dump(cases_stats, f, indent=2)

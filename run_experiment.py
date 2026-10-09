@@ -34,6 +34,28 @@ from castmind.eval import align_predictions, mae, mse, smape
 from castmind.tools.analysis import analyze_training
 from castmind.features import extract_target_features, extract_exogenous_features
 
+from castmind.run_layout import (
+    bind_dataset_paths,
+    build_run_fingerprint,
+    case_library_ready,
+    resolve_experiment_paths,
+    write_library_manifest,
+    write_run_manifest,
+)
+
+
+def _env_flag_true(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _load_cached_analysis(case_lib_dir: str) -> AnalyzeResult:
+    memory_path = os.path.join(case_lib_dir, "memory.json")
+    with open(memory_path, "r", encoding="utf-8") as f:
+        memory = json.load(f)
+    if not isinstance(memory, dict):
+        memory = {}
+    return AnalyzeResult(memory=memory, case_base=[], case_neighbors=[])
+
 
 def _archive_tag(dataset_name: str) -> str:
     """Stable archive folder name for overwriteable slots under outputs/_archive/."""
@@ -69,7 +91,7 @@ def _parse_max_steps() -> Optional[int]:
 
 
 def _write_metrics_json(
-    output_dir: str,
+    metrics_dir: str,
     dataset_name: str,
     metrics_row: Dict,
     *,
@@ -77,12 +99,14 @@ def _write_metrics_json(
     ablation_id: str = "",
     ablation_flags: Optional[Dict[str, bool]] = None,
     max_steps: Optional[int] = None,
+    run_name: Optional[str] = None,
 ) -> Path:
-    """Persist MSE/MAE/sMAPE next to predictions so auto-archive picks them up."""
-    ds_out = Path(output_dir) / dataset_name
-    ds_out.mkdir(parents=True, exist_ok=True)
+    """Persist MSE/MAE/sMAPE next to predictions."""
+    out = Path(metrics_dir)
+    out.mkdir(parents=True, exist_ok=True)
     payload = {
         "dataset": dataset_name,
+        "run_name": run_name,
         "MSE": float(metrics_row["MSE"]),
         "MAE": float(metrics_row["MAE"]),
         "sMAPE": float(metrics_row["sMAPE"]),
@@ -94,19 +118,19 @@ def _write_metrics_json(
         "max_steps": int(max_steps) if max_steps is not None else None,
         "ablation_flags": ablation_flags,
     }
-    path = ds_out / "metrics.json"
+    path = out / "metrics.json"
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"[info] Wrote {path} (n={payload['n']} MSE={payload['MSE']:.6f} MAE={payload['MAE']:.6f})")
     return path
 
 
-def archive_dataset_outputs(output_dir: str, dataset_name: str) -> Optional[Path]:
-    """Copy outputs/<dataset> into outputs/_archive/<tag>, replacing any previous copy."""
-    flag = (os.getenv("CASTMIND_AUTO_ARCHIVE") or "1").strip().lower()
+def archive_dataset_outputs(output_dir: str, dataset_name: str, run_dir: Optional[str] = None) -> Optional[Path]:
+    """Optional legacy copy into outputs/_archive/<tag> (disabled by default when using run dirs)."""
+    flag = (os.getenv("CASTMIND_AUTO_ARCHIVE") or "0").strip().lower()
     if flag in {"0", "false", "no", "off"}:
         return None
 
-    src = Path(output_dir) / dataset_name
+    src = Path(run_dir) if run_dir else Path(output_dir) / dataset_name
     if not src.is_dir():
         print(f"[warn] Auto-archive skipped: missing source directory {src}")
         return None
@@ -138,6 +162,8 @@ def run_experiment(
     config_path: str,
     dataset_selectors: Optional[List[str]] = None,
     ablation: Optional[str] = None,
+    run_name: Optional[str] = None,
+    resume: bool = False,
 ) -> None:
     # Load environment from .env if present
     load_dotenv(override=False)
@@ -145,12 +171,18 @@ def run_experiment(
     cfg = load_config(config_path)
     os.makedirs(cfg.output_dir, exist_ok=True)
 
+    env_run = (os.getenv("CASTMIND_RUN_NAME") or "").strip() or None
+    cfg.run_name = (run_name or env_run or "").strip() or None
+    cfg.resume = bool(resume) or _env_flag_true("CASTMIND_RESUME")
+
     env_ablation = (os.getenv("CASTMIND_ABLATION") or "").strip() or None
     ablation_id = apply_ablation(cfg, ablation or env_ablation)
     if ablation_id:
         os.environ["CASTMIND_ABLATION"] = ablation_id
     flags = ablation_flags_dict(cfg)
     print(f"[info] ablation_flags={flags}" + (f" ablation={ablation_id}" if ablation_id else " (full)"))
+    if cfg.run_name:
+        print(f"[info] run_name={cfg.run_name}" + (" resume=1" if cfg.resume else ""))
     max_steps = _parse_max_steps()
     if max_steps is not None:
         print(f"[info] CASTMIND_MAX_STEPS={max_steps} (early stop after N windows; not a full eval)")
@@ -214,56 +246,138 @@ def run_experiment(
             train_df = train_df.sort_values(TIME_COL).reset_index(drop=True)
         except Exception as exc:
             print(f"[warn] Failed to load training data for dataset '{ds.name}': {exc}. Using deterministic fallback.")
+            # Still isolate under runs/<name> when possible.
+            try:
+                resolved_fb = resolve_experiment_paths(
+                    cfg,
+                    dataset_name=ds.name,
+                    training_csv=ds.training_csv,
+                    test_csv=ds.test_csv,
+                    target_column="unknown",
+                    look_back=int(ds.look_back),
+                    sliding_window=int(ds.sliding_window),
+                    predicted_window=int(ds.predicted_window),
+                    ablation_id=ablation_id,
+                    force_new_library=False,
+                )
+                bind_dataset_paths(cfg, resolved_fb)
+                run_dir_fb = str(resolved_fb.run_dir)
+            except Exception as path_exc:
+                print(f"[error] Cannot create run directory: {path_exc}")
+                raise SystemExit(2) from path_exc
             det_row = deterministic_run_for_dataset(cfg, ds)
             rows.append(det_row)
             _write_metrics_json(
-                cfg.output_dir,
+                run_dir_fb,
                 ds.name,
                 det_row,
                 n=int(det_row.get("n") or 0),
                 ablation_id=ablation_id,
                 ablation_flags=flags,
                 max_steps=max_steps,
+                run_name=cfg.run_name,
             )
             continue
 
         look_back = int(ds.look_back)
         predicted_window = int(ds.predicted_window)
+        force_analyze = _env_flag_true("CASTMIND_FORCE_ANALYZE")
+        target_col = infer_target_column(train_df, ds.name)
 
         try:
-            analysis = analyze_training(
-                train_df,
-                look_back,
-                predicted_window,
-                cfg.output_dir,
-                ds.name,
-                ds.sliding_window,
-                method="weighted",
-                num_clusters=6,
-                dataset_cfg=ds,
+            resolved = resolve_experiment_paths(
+                cfg,
+                dataset_name=ds.name,
+                training_csv=ds.training_csv,
+                test_csv=ds.test_csv,
+                target_column=target_col,
+                look_back=look_back,
+                sliding_window=int(ds.sliding_window),
+                predicted_window=predicted_window,
+                ablation_id=ablation_id,
+                force_new_library=force_analyze,
             )
+        except (ValueError, FileExistsError, FileNotFoundError, RuntimeError) as exc:
+            print(f"[error] {exc}")
+            raise SystemExit(2) from exc
+
+        bind_dataset_paths(cfg, resolved)
+        case_lib_dir = str(resolved.case_library_dir)
+        ds_out_dir = str(resolved.run_dir)
+        print(
+            f"[info] run_dir={ds_out_dir} case_library={case_lib_dir} "
+            f"lib_id={resolved.lib_id}"
+        )
+
+        skip_analyze = not force_analyze and case_library_ready(case_lib_dir)
+
+        try:
+            if skip_analyze:
+                print(
+                    f"[info] Skipping analyze_training for '{ds.name}' "
+                    f"(case library {resolved.lib_id} on disk; set CASTMIND_FORCE_ANALYZE=1 to rebuild)."
+                )
+                analysis = _load_cached_analysis(case_lib_dir)
+            else:
+                analysis = analyze_training(
+                    train_df,
+                    look_back,
+                    predicted_window,
+                    cfg.output_dir,
+                    ds.name,
+                    ds.sliding_window,
+                    method="weighted",
+                    num_clusters=6,
+                    dataset_cfg=ds,
+                    case_out_dir=case_lib_dir,
+                )
+                write_library_manifest(
+                    Path(case_lib_dir),
+                    fingerprint=resolved.lib_id,
+                    training_csv=ds.training_csv,
+                    target_column=target_col,
+                    look_back=look_back,
+                    sliding_window=int(ds.sliding_window),
+                    predicted_window=predicted_window,
+                )
         except Exception as exc:
             print(f"[warn] Training analysis failed for dataset '{ds.name}': {exc}. Using deterministic fallback.")
             det_row = deterministic_run_for_dataset(cfg, ds)
             rows.append(det_row)
             _write_metrics_json(
-                cfg.output_dir,
+                ds_out_dir,
                 ds.name,
                 det_row,
                 n=int(det_row.get("n") or 0),
                 ablation_id=ablation_id,
                 ablation_flags=flags,
                 max_steps=max_steps,
+                run_name=cfg.run_name,
             )
             continue
 
-        ds_out_dir = os.path.join(cfg.output_dir, ds.name)
+        if not cfg.resume:
+            fingerprint = build_run_fingerprint(
+                cfg,
+                dataset_name=ds.name,
+                training_csv=ds.training_csv,
+                test_csv=ds.test_csv,
+                target_column=target_col,
+                look_back=look_back,
+                sliding_window=int(ds.sliding_window),
+                predicted_window=predicted_window,
+                ablation_id=ablation_id,
+                lib_id=resolved.lib_id,
+            )
+            fingerprint["case_library_dir"] = case_lib_dir
+            fingerprint["run_name"] = resolved.run_name
+            write_run_manifest(Path(ds_out_dir), fingerprint)
+
         frequency = None
         if isinstance(analysis.memory, dict):
             frequency = analysis.memory.get("frequency")
 
         # Dynamically infer the target column for downstream feature computation
-        target_col = infer_target_column(train_df, ds.name)
         y = train_df[target_col].to_numpy(dtype=float)
         sel_cfg = getattr(cfg, "feature_selection_override", None)
 
@@ -375,9 +489,13 @@ def run_experiment(
         resume_required = False
 
         if agent is not None:
-            resume_state = load_resume_state(ds_out_dir)
-            if resume_state is None and os.path.exists(out_csv):
-                os.remove(out_csv)
+            resume_state = load_resume_state(ds_out_dir) if cfg.resume else None
+            if not cfg.resume and os.path.exists(out_csv):
+                # New run dirs should be empty; refuse rather than wipe.
+                raise SystemExit(
+                    f"[error] predictions.csv already exists under {ds_out_dir}. "
+                    "Use --resume or a new --run-name."
+                )
 
             total_len = len(target_df)
             if total_len == 0:
@@ -466,13 +584,17 @@ def run_experiment(
                         f"[info] Resuming LLM orchestration for dataset '{ds.name}' from step {step_index} with {current_collected}/{total_needed} predictions already collected."
                     )
                 else:
-                    if resume_state is not None:
+                    if resume_state is not None and not cfg.resume:
                         clear_resume_state(ds_out_dir)
-                    current_len = 0
-                    current_collected = 0
-                    step_index = 0
-                    if os.path.exists(out_csv):
-                        os.remove(out_csv)
+                    if not cfg.resume:
+                        current_len = 0
+                        current_collected = 0
+                        step_index = 0
+                    elif not resume_state_valid:
+                        raise SystemExit(
+                            f"[error] --resume for '{ds.name}' but resume state is missing or "
+                            f"mismatched under {ds_out_dir}."
+                        )
 
                 llm_failed = False
                 early_stop_due_to_bounds = False
@@ -500,6 +622,22 @@ def run_experiment(
                         sections: List[str] = []
                         if formatted_brief:
                             sections.append(formatted_brief)
+                        # Bind segment placement in Python, not in LLM-generated arguments.
+                        segment_start = len(prior_half) if prior_half is not None else 0
+                        if use_two_stage:
+                            cfg._active_forecast_segment = {
+                                "dataset": ds.name,
+                                "window_offset": window_offset,
+                                "horizon_start": segment_start,
+                                "length": stage_horizon,
+                                "timestamps": [
+                                    pd.Timestamp(t).isoformat()
+                                    for t in test_df[TIME_COL].iloc[
+                                        window_offset + look_back + segment_start:
+                                        window_offset + look_back + segment_start + stage_horizon
+                                    ]
+                                ],
+                            }
                         two_stage_extra = ""
                         if use_two_stage and prior_half is None:
                             two_stage_extra = dedent(
@@ -516,8 +654,10 @@ def run_experiment(
                                 first half ({len(prior_half)} points): {json.dumps(prior_half)}.
                                 Continuity was intentionally interrupted (paper Table 4). Now emit ONLY
                                 the remaining {stage_horizon} points. Call consult with
-                                forecast_horizon={stage_horizon}. When emitting, omit start_timestamp
-                                (or set null) so timestamps continue after the first half already on disk.
+                                forecast_horizon={stage_horizon}. The runner binds this segment to
+                                full-window indices {segment_start} through {segment_start + stage_horizon - 1}.
+                                When emitting, omit start_timestamp (or set null); the runner supplies
+                                the exact segment timestamps, including on retries.
                                 """
                             ).strip()
                         sections.append(
@@ -613,10 +753,17 @@ def run_experiment(
                                     ),
                                     None,
                                 )
-                                if pred_col is not None and len(_pdf) >= half1:
-                                    prior_half = [float(x) for x in _pdf[pred_col].iloc[-half1:].tolist()]
+                                if pred_col is not None and {"window_offset", "horizon_index"}.issubset(_pdf.columns):
+                                    _first = _pdf.loc[
+                                        (pd.to_numeric(_pdf["window_offset"], errors="coerce") == window_offset)
+                                        & (pd.to_numeric(_pdf["horizon_index"], errors="coerce") < half1)
+                                    ].sort_values("horizon_index")
+                                    if _first["horizon_index"].tolist() == list(range(half1)):
+                                        prior_half = [float(x) for x in _first[pred_col].tolist()]
                             except Exception:
                                 prior_half = []
+                        if len(prior_half) != half1:
+                            raise RuntimeError("Cannot start two-stage continuation without the complete first half")
                         if not _run_agent_prompt(
                             _build_step_prompt(
                                 stage_horizon=half2,
@@ -760,13 +907,14 @@ def run_experiment(
                     }
                     rows.append(metrics_row)
                     _write_metrics_json(
-                        cfg.output_dir,
+                        ds_out_dir,
                         ds.name,
                         metrics_row,
                         n=len(y_true),
                         ablation_id=ablation_id,
                         ablation_flags=flags,
                         max_steps=max_steps,
+                        run_name=cfg.run_name,
                     )
                     agent_success = True
 
@@ -837,7 +985,8 @@ def run_experiment(
                         },
                     )
                     print(
-                        f"[info] Saved partial LLM results for dataset '{ds.name}'. Re-run the experiment to resume forecasting from step {step_index}."
+                        f"[info] Saved partial LLM results for dataset '{ds.name}' under {ds_out_dir}. "
+                        f"Resume with the same --run-name and --resume (from step {step_index})."
                     )
 
         if agent_success:
@@ -849,29 +998,30 @@ def run_experiment(
         det_row = deterministic_run_for_dataset(cfg, ds)
         rows.append(det_row)
         _write_metrics_json(
-            cfg.output_dir,
+            ds_out_dir,
             ds.name,
             det_row,
             n=int(det_row.get("n") or 0),
             ablation_id=ablation_id,
             ablation_flags=flags,
             max_steps=max_steps,
+            run_name=cfg.run_name,
         )
 
     summary = pd.DataFrame(rows)
     print("\n=== Experiment Summary ===")
     print(summary.to_string(index=False))
 
-    # After a finished run (including early-stop eval), snapshot each dataset that
-    # contributed a summary row into outputs/_archive/<tag>, overwriting prior copies.
+    # Optional legacy _archive copy (off by default; isolated runs/ is the source of truth).
     if not summary.empty and "dataset" in summary.columns:
         for ds_name in summary["dataset"].astype(str).unique():
-            archive_dataset_outputs(cfg.output_dir, ds_name)
+            run_dir = getattr(cfg, "run_dirs", {}).get(ds_name)
+            archive_dataset_outputs(cfg.output_dir, ds_name, run_dir=run_dir)
 
     if any_resume_required:
         print(
             "[error] One or more datasets stopped with partial LLM progress (resume state saved). "
-            "Exiting with code 1 so shell loops using `|| break` stop correctly."
+            "Re-run with the same --run-name and --resume. Exiting with code 1."
         )
         raise SystemExit(1)
 
@@ -904,6 +1054,17 @@ if __name__ == "__main__":
             "(two_stage|enhanced_reflect). Default is Full."
         ),
     )
+    parser.add_argument(
+        "--run-name",
+        type=str,
+        default=None,
+        help="Isolated experiment folder under outputs/<ds>/runs/<name>/ (e.g. Full_1).",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Continue an existing --run-name directory (same name; do not invent a new one).",
+    )
 
     args, unknown = parser.parse_known_args()
 
@@ -921,4 +1082,6 @@ if __name__ == "__main__":
         args.config,
         selector_tokens if selector_tokens else None,
         ablation=args.ablation,
+        run_name=args.run_name,
+        resume=bool(args.resume),
     )

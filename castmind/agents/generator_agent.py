@@ -107,8 +107,14 @@ def create_generator_agent(
     _ = investigator_agent
 
     def _dataset_out_dir(name: str) -> str:
-        base_dir = cfg.output_dir if cfg else "outputs"
-        return os.path.join(base_dir, name)
+        from castmind.run_layout import get_run_dir
+
+        return get_run_dir(cfg, name)
+
+    def _case_lib_dir(name: str) -> str:
+        from castmind.run_layout import get_case_library_dir
+
+        return get_case_library_dir(cfg, name)
 
     def _feature_mode() -> str:
         return str(getattr(cfg, "feature_selection", "paper") or "paper").strip().lower() if cfg else "paper"
@@ -506,7 +512,8 @@ def create_generator_agent(
             except Exception:
                 pass
 
-        ds_out_dir = os.path.join(output_dir, dataset_name)
+        ds_out_dir = _dataset_out_dir(dataset_name)
+        case_lib_dir = _case_lib_dir(dataset_name)
         os.makedirs(ds_out_dir, exist_ok=True)
         out_csv = os.path.join(ds_out_dir, "predictions.csv")
 
@@ -523,7 +530,9 @@ def create_generator_agent(
                 f"(method={investor_packet.get('selection_method')})"
             )
 
-        feat_path = os.path.join(ds_out_dir, "features.json")
+        feat_path = os.path.join(case_lib_dir, "features.json")
+        if not os.path.exists(feat_path):
+            feat_path = os.path.join(ds_out_dir, "features.json")
         # Prefer look-back features from packet when present.
         packet_features = None
         if isinstance(investor_packet, dict):
@@ -579,9 +588,13 @@ def create_generator_agent(
             selected_features = provided
             feature_weights = cleaned_weights
 
-        exo_top3_path = os.path.join(ds_out_dir, "exogenous_top3.json")
-        exo_feat_path = os.path.join(ds_out_dir, "exogenous_features.json")
-        exo_corr_path = os.path.join(ds_out_dir, "exogenous_correlations.json")
+        exo_top3_path = os.path.join(case_lib_dir, "exogenous_top3.json")
+        exo_feat_path = os.path.join(case_lib_dir, "exogenous_features.json")
+        exo_corr_path = os.path.join(case_lib_dir, "exogenous_correlations.json")
+        if not os.path.exists(exo_top3_path):
+            exo_top3_path = os.path.join(ds_out_dir, "exogenous_top3.json")
+            exo_feat_path = os.path.join(ds_out_dir, "exogenous_features.json")
+            exo_corr_path = os.path.join(ds_out_dir, "exogenous_correlations.json")
         if (
             getattr(cfg, "use_exogenous", False)
             and os.path.exists(exo_top3_path)
@@ -679,6 +692,13 @@ def create_generator_agent(
                     f"[warn] Invalid start_timestamp '{start_timestamp}' for dataset '{dataset_name}'. Falling back to automatic anchoring."
                 )
                 parsed_start_ts = None
+            # "" / "NaN" / "nat" parse to NaT without raising; NaT is not None and would
+            # poison the whole emission window if treated as a valid start.
+            if parsed_start_ts is not None and pd.isna(parsed_start_ts):
+                print(
+                    f"[warn] start_timestamp '{start_timestamp}' parsed to NaT for dataset '{dataset_name}'. Falling back to automatic anchoring."
+                )
+                parsed_start_ts = None
 
         freq_clean: Optional[str] = None
         if isinstance(frequency, str):
@@ -693,12 +713,16 @@ def create_generator_agent(
         if os.path.exists(out_csv):
             existing_df = pd.read_csv(out_csv)
             if len(existing_df) > 0 and "time_stamp" in existing_df.columns:
-                existing_df["time_stamp"] = pd.to_datetime(existing_df["time_stamp"])  # type: ignore
-                existing_unique = (
-                    existing_df.sort_values("time_stamp", kind="mergesort")
-                    .drop_duplicates(subset=["time_stamp"], keep="last")
-                    .reset_index(drop=True)
-                )
+                existing_df["time_stamp"] = pd.to_datetime(existing_df["time_stamp"], errors="coerce")  # type: ignore
+                existing_valid = existing_df[existing_df["time_stamp"].notna()].copy()
+                if len(existing_valid) > 0:
+                    existing_unique = (
+                        existing_valid.sort_values("time_stamp", kind="mergesort")
+                        .drop_duplicates(subset=["time_stamp"], keep="last")
+                        .reset_index(drop=True)
+                    )
+                else:
+                    existing_unique = None
             else:
                 existing_df = None
                 existing_unique = None
@@ -735,14 +759,19 @@ def create_generator_agent(
 
         if not timestamps:
             if existing_unique is not None and len(existing_unique) > 0:
-                last_ts = existing_unique["time_stamp"].iloc[-1]
-                try:
-                    last_ts = pd.Timestamp(last_ts)
-                    if freq_clean:
-                        offset = pd.tseries.frequencies.to_offset(freq_clean)
-                        timestamps = [last_ts + offset * (i + 1) for i in range(H)]
-                except Exception:
-                    timestamps = []
+                # Prefer last valid (non-NaT) timestamp; NaT sorts last and would cascade.
+                valid_ts = existing_unique["time_stamp"].dropna()
+                if len(valid_ts) > 0:
+                    last_ts = valid_ts.iloc[-1]
+                    try:
+                        last_ts = pd.Timestamp(last_ts)
+                        if pd.isna(last_ts):
+                            raise ValueError("last timestamp is NaT")
+                        if freq_clean:
+                            offset = pd.tseries.frequencies.to_offset(freq_clean)
+                            timestamps = [last_ts + offset * (i + 1) for i in range(H)]
+                    except Exception:
+                        timestamps = []
             if not timestamps:
                 try:
                     tdf_try = pd.read_csv(training_csv)
@@ -757,8 +786,25 @@ def create_generator_agent(
                 except Exception:
                     timestamps = []
 
+        horizon_start = 0
+        if cfg is not None and getattr(cfg, "two_stage", False):
+            from castmind.prediction_segments import resolve_segment
+
+            timestamps, horizon_start = resolve_segment(
+                getattr(cfg, "_active_forecast_segment", None),
+                dataset_name=dataset_name,
+                window_offset=window_offset_int,
+                length=H,
+            )
+            parsed_start_ts = timestamps[0]
+
         if not timestamps:
             raise RuntimeError(f"Unable to infer timestamps for dataset '{dataset_name}'.")
+        if any(pd.isna(ts) for ts in timestamps):
+            raise RuntimeError(
+                f"Refusing to write NaT timestamps for dataset '{dataset_name}' "
+                f"(start_timestamp={start_timestamp!r}, window_offset={window_offset_int})."
+            )
 
         if existing_df is not None and "emission_index" in existing_df.columns:
             try:
@@ -775,13 +821,37 @@ def create_generator_agent(
                 "time_stamp": pd.to_datetime(timestamps),
                 "prediction": arr.tolist(),
                 "window_offset": window_offset_int,
-                "horizon_index": list(range(H)),
+                "window_id": str(window_offset_int),
+                "horizon_index": list(range(horizon_start, horizon_start + H)),
                 "emission_index": np.arange(start_sequence, start_sequence + H, dtype=int),
+                "is_final": True,
             }
         )
 
+        from castmind.run_layout import append_jsonl, replace_window_predictions
+        from datetime import datetime, timezone
+
+        emission_record = {
+            "emission_id": f"{window_offset_int}:{start_sequence}",
+            "attempt_id": start_sequence,
+            "horizon_start": horizon_start,
+            "horizon_length": H,
+            "window_id": str(window_offset_int),
+            "window_offset": window_offset_int,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "start_timestamp": parsed_start_ts.isoformat() if parsed_start_ts is not None else None,
+            "predictions": arr.tolist(),
+            "approved": True,
+            "is_final": True,
+        }
+        append_jsonl(os.path.join(ds_out_dir, "emissions.jsonl"), emission_record)
+
         if existing_df is not None and len(existing_df) > 0:
-            combined = pd.concat([existing_df, new_chunk], ignore_index=True)
+            # Supersede any prior final rows for this window (Reflector retries / re-emit).
+            combined = replace_window_predictions(
+                existing_df, new_chunk, window_offset=window_offset_int,
+                horizon_start=horizon_start if horizon_start > 0 else None,
+            )
         else:
             combined = new_chunk
 

@@ -13,13 +13,19 @@ fi
 
 export ORCHESTRATION_MODE="${ORCHESTRATION_MODE:-deterministic}"
 export CASTMIND_RUNTIME="${CASTMIND_RUNTIME:-main}"
-# Auto-archive to outputs/_archive/<dataset>_… after a finished run (set 0 to disable).
-export CASTMIND_AUTO_ARCHIVE="${CASTMIND_AUTO_ARCHIVE:-1}"
+# Legacy overwriteable outputs/_archive copy (off by default; runs/<name>/ is canonical).
+export CASTMIND_AUTO_ARCHIVE="${CASTMIND_AUTO_ARCHIVE:-0}"
 
 cd "${ROOT}"
 echo "[info] Using main env: ${VENV}"
 echo "[info] ORCHESTRATION_MODE=${ORCHESTRATION_MODE}"
 echo "[info] CASTMIND_RUNTIME=${CASTMIND_RUNTIME} AUTO_ARCHIVE=${CASTMIND_AUTO_ARCHIVE}"
+if [[ -n "${CASTMIND_RUN_NAME:-}" ]]; then
+  echo "[info] CASTMIND_RUN_NAME=${CASTMIND_RUN_NAME}"
+fi
+if [[ -n "${CASTMIND_RESUME:-}" ]]; then
+  echo "[info] CASTMIND_RESUME=${CASTMIND_RESUME}"
+fi
 "${PY}" - <<'PY'
 import transformers
 from castmind.models.base import get_default_models
