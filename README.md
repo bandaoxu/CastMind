@@ -1,3 +1,7 @@
+# CastMind：本地复现与实验
+
+本分支保留原始预测方法及通用工程修复；v1/v2 特征检索保留在独立实验分支。下方原项目介绍和结果图不是本地实验成绩。运行说明见 [RUNBOOK.md](RUNBOOK.md)。
+
 <!-- <h1 align="center"> 🌟 CastMind: An Agentic Human Wisdom–LLM Intelligence 
 
 Co-Reasoning Framework for Cognitive Time Series Forecasting. </h1> -->
@@ -47,21 +51,21 @@ pip install -r requirements.txt
 4. **Run experiments**
 
 ```bash
-python run_experiment.py
+python run_experiment.py --dataset ETTh1 --run-name Full_1
 ```
 
 ### Local reproduction (this fork)
 
-Prefer the project `.venv` (`transformers==4.40.1`) and the copy-paste commands in **[RUNBOOK.md](./RUNBOOK.md)**（含 **§4 十数据集全量跑**）。
+Prefer the project `.venv` (`transformers==4.40.1`) and the copy-paste commands in **[RUNBOOK.md](./RUNBOOK.md)**。
 
 多人协作（拉取后建环境、网盘同步、分支与 PR）：**[COLLABORATING.md](./COLLABORATING.md)**。
 
 ```bash
 bash scripts/setup_env.sh
-ORCHESTRATION_MODE=llm bash scripts/run.sh --dataset ETTh1
+ORCHESTRATION_MODE=llm bash scripts/run.sh --dataset ETTh1 --run-name Full_1
 ```
 
-Paper column **ETTh** = local dataset **`ETTh1`**. Full 10-dataset loop, light checkpoints, and resume notes: see RUNBOOK.
+Paper column **ETTh** = local dataset **`ETTh1`**. For isolated runs and explicit resume instructions, see RUNBOOK.
 
 ## 🧪 Experimental Results
 
