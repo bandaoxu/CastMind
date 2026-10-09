@@ -67,7 +67,7 @@ outputs/
 .mplconfig/
 
 # Local progress / weekly notes (keep off remote)
-docs/
+/docs
 
 # Local datasets and trained/downloaded weights
 data/
