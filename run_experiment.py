@@ -31,7 +31,7 @@ from castmind.agents.runtime import (
 )
 from castmind.agents.knowledge import build_context_lookup, build_knowledge_lookup
 from castmind.eval import align_predictions, mae, mse, smape
-from castmind.tools.analysis import analyze_training
+from castmind.tools.analysis import AnalyzeResult, analyze_training
 from castmind.features import extract_target_features, extract_exogenous_features
 
 from castmind.run_layout import (
