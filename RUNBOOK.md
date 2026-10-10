@@ -38,7 +38,17 @@ ORCHESTRATION_MODE=llm bash scripts/run.sh --dataset ETTh1 --run-name Full_2
 ORCHESTRATION_MODE=llm bash scripts/run.sh --dataset ETTh1 --run-name Full_2 --resume
 ```
 
-续跑保持原配置和环境；manifest 会核对数据、运行配置、源码及提示词；不匹配会拒绝。案例库缺失或核心文件变化也会拒绝续跑。不要删 CSV 后在原目录重跑。旧迁移 manifest 可能没有完整指纹，不能保证可以续跑。
+续跑保持原配置和环境；manifest 会核对数据、运行配置、源码及提示词；不匹配会拒绝。案例库缺失或核心文件变化也会拒绝续跑。不要删 CSV 后在原目录重跑。
+
+旧迁移 / 强化指纹之前启动的 run，`run_manifest.json` 可能缺少 `runtime_config`、`source_hashes`，或 `prompt_hashes` / `ablation_flags` 形状偏旧，直接 `--resume` 会被拒绝。重叠实验条件仍一致时，可先显式升级（会备份为 `run_manifest.pre_upgrade.json`），再续跑：
+
+```bash
+.venv/bin/python scripts/upgrade_legacy_run_manifest.py --dataset EPF_FR --run-name Full_1 --dry-run
+.venv/bin/python scripts/upgrade_legacy_run_manifest.py --dataset EPF_FR --run-name Full_1
+ORCHESTRATION_MODE=llm bash scripts/run.sh --dataset EPF_FR --run-name Full_1 --resume
+```
+
+升级只改 manifest，不改案例库与 `predictions.csv`。同一次 run 可能跨源码版本，论文需披露；条件已变则应新开 `--run-name`。
 
 ## 3. 案例库与产物
 
@@ -63,7 +73,16 @@ CASTMIND_FORCE_ANALYZE=1 ORCHESTRATION_MODE=llm bash scripts/run.sh --dataset ET
 
 ## 4. 基线评测与表格
 
-先为一个经过有效性核验的系统跑次明确指定预测文件。下例 Full_2 是示例名，应替换为实际通过检查的跑次。
+对已核验的系统跑次做基线对照：终端传入数据集与 `--run-name`，读取 `outputs/<DATASET>/runs/<RUN_NAME>/predictions.csv`，结果写入 `outputs/comparison/<DATASET>/`，结束后同步该集 JSON 到根目录，并刷新**全部数据集**总表 `outputs/comparison/table.md`（含 EPF/ETT/风电/光伏/MOPEX 等；未更新的集沿用根目录已有片段）。
+
+```bash
+bash scripts/run_epf_baseline_comparison.sh EPF_BE Full_1
+bash scripts/run_epf_baseline_comparison.sh EPF_DE Full_1
+bash scripts/run_epf_baseline_comparison.sh EPF_FR Full_1
+bash scripts/run_epf_baseline_comparison.sh EPF_NP Full_3
+```
+
+其他数据集仍手写评测与组装。下例 Full_2 是示例名，应替换为实际通过检查的跑次。
 
 ```bash
 bash scripts/run.sh scripts/eval_baselines_table.py \

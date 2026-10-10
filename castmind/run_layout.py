@@ -344,6 +344,131 @@ def verify_resume_manifest(
         )
 
 
+_LEGACY_ABLATION_KEYS = frozenset({"use_feature_case_library"})
+_UPGRADE_FROM_TAG = "pre_d54be1e_shape"
+
+
+def merge_legacy_fingerprint(
+    stored: Dict[str, Any],
+    current: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Merge a legacy run_manifest fingerprint into the current schema.
+
+    Overlapping fingerprint fields must match (with special cases for
+    ``prompt_hashes`` subset equality and stripped legacy ablation flags).
+    Missing fingerprint keys are filled from ``current``. Non-fingerprint
+    fields from ``stored`` are preserved.
+    """
+    if not isinstance(stored, dict) or not isinstance(current, dict):
+        raise RuntimeError("Legacy upgrade refused: stored/current must be objects")
+
+    upgraded = dict(stored)
+    changed: List[str] = []
+
+    for key in _FINGERPRINT_KEYS:
+        if key not in stored:
+            upgraded[key] = current.get(key)
+            changed.append(key)
+            continue
+
+        left = stored.get(key)
+        right = current.get(key)
+
+        if key == "prompt_hashes":
+            if not isinstance(left, dict):
+                raise RuntimeError(
+                    "Legacy upgrade refused: prompt_hashes stored value is not an object"
+                )
+            if not isinstance(right, dict):
+                raise RuntimeError(
+                    "Legacy upgrade refused: prompt_hashes current value is not an object"
+                )
+            for prompt_key, digest in left.items():
+                if prompt_key not in right:
+                    raise RuntimeError(
+                        f"Legacy upgrade refused: prompt_hashes key {prompt_key!r} "
+                        "missing from current fingerprint"
+                    )
+                if digest != right[prompt_key]:
+                    raise RuntimeError(
+                        f"Legacy upgrade refused: prompt_hashes mismatch for {prompt_key!r}"
+                    )
+            if left != right:
+                upgraded[key] = dict(right)
+                changed.append(key)
+            continue
+
+        if key == "ablation_flags":
+            if not isinstance(left, dict):
+                raise RuntimeError(
+                    "Legacy upgrade refused: ablation_flags stored value is not an object"
+                )
+            if not isinstance(right, dict):
+                raise RuntimeError(
+                    "Legacy upgrade refused: ablation_flags current value is not an object"
+                )
+            trimmed = {k: v for k, v in left.items() if k not in _LEGACY_ABLATION_KEYS}
+            if trimmed != right:
+                raise RuntimeError(
+                    "Legacy upgrade refused: ablation_flags mismatch after dropping "
+                    f"legacy keys {_LEGACY_ABLATION_KEYS}: "
+                    f"stored={trimmed!r} current={right!r}"
+                )
+            if left != right:
+                upgraded[key] = dict(right)
+                changed.append(key)
+            continue
+
+        if left != right:
+            raise RuntimeError(
+                f"Legacy upgrade refused: {key} mismatch "
+                f"(stored={left!r} current={right!r})"
+            )
+
+    if not changed and all(stored.get(k) == current.get(k) for k in _FINGERPRINT_KEYS):
+        # Already current-shaped; still allow stamping when called to rewrite.
+        pass
+
+    upgraded["legacy_manifest_upgraded_at"] = datetime.now(timezone.utc).isoformat()
+    upgraded["legacy_manifest_upgrade_from"] = _UPGRADE_FROM_TAG
+    upgraded["_upgrade_changed_keys"] = changed
+    return upgraded
+
+
+def upgrade_legacy_run_manifest(
+    run_dir: Path,
+    current: Dict[str, Any],
+    *,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Upgrade ``run_manifest.json`` under ``run_dir`` to the current fingerprint schema.
+
+    Backs up the original to ``run_manifest.pre_upgrade.json`` before writing.
+    Returns the upgraded payload (including transient ``_upgrade_changed_keys``).
+    """
+    run_dir = Path(run_dir)
+    stored = load_run_manifest(run_dir)
+    if stored is None:
+        raise RuntimeError(f"Legacy upgrade refused: missing run_manifest.json under {run_dir}")
+
+    upgraded = merge_legacy_fingerprint(stored, current)
+    changed = list(upgraded.pop("_upgrade_changed_keys", []))
+
+    if dry_run:
+        upgraded["_upgrade_changed_keys"] = changed
+        return upgraded
+
+    backup = run_dir / "run_manifest.pre_upgrade.json"
+    if not backup.is_file():
+        backup.write_text(
+            json.dumps(stored, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    write_run_manifest(run_dir, upgraded)
+    upgraded["_upgrade_changed_keys"] = changed
+    return upgraded
+
+
 def resolve_experiment_paths(
     cfg: ExperimentConfig,
     *,
@@ -638,12 +763,14 @@ __all__ = [
     "get_run_dir",
     "list_existing_run_names",
     "load_run_manifest",
+    "merge_legacy_fingerprint",
     "replace_window_predictions",
     "resolve_experiment_paths",
     "runs_root",
     "sanitize_run_name",
     "sha256_file",
     "suggest_next_run_name",
+    "upgrade_legacy_run_manifest",
     "verify_resume_manifest",
     "write_library_manifest",
     "write_run_manifest",
